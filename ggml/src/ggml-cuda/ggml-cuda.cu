@@ -4562,10 +4562,115 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
 }
 #endif // USE_CUDA_GRAPH
 
+static bool ggml_cuda_ffn_fusion_debug_enabled() {
+    static const bool enabled = [] {
+        const char * value = std::getenv("DEBUG_CUDA_FFN_FUSION");
+        return value && strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+// Compact tensor fields: tensor pointer | data pointer | type | ne[0..3] | nb[0..3] | contiguous.
+static void ggml_cuda_ffn_fusion_tensor(const ggml_tensor * tensor, char (&text)[320]) {
+    if (!tensor) {
+        snprintf(text, sizeof(text), "null");
+        return;
+    }
+    snprintf(text, sizeof(text), "%p|%p|%s|%lld:%lld:%lld:%lld|%zu:%zu:%zu:%zu|%d",
+             (const void *) tensor, tensor->data, ggml_type_name(tensor->type),
+             (long long) tensor->ne[0], (long long) tensor->ne[1],
+             (long long) tensor->ne[2], (long long) tensor->ne[3],
+             tensor->nb[0], tensor->nb[1], tensor->nb[2], tensor->nb[3], (int) ggml_is_contiguous(tensor));
+}
+
+// Read the graph before evaluation/capture, including invocations that replay an existing CUDA graph.
+// Eligibility is structural only. MMQ's selection helper queries CUDA, and tile selection lives in
+// its launch path, so neither is reconstructed here. No graph, tensor, or launch state is modified.
+static void ggml_cuda_debug_ffn_fusion(const ggml_backend_cuda_context * ctx, const ggml_cgraph * cgraph) {
+    static std::atomic<uint64_t> sequence{0};
+    const uint64_t graph_seq = sequence.fetch_add(1, std::memory_order_relaxed);
+    const int cc = ggml_cuda_info().devices[ctx->device].cc;
+    int candidates = 0;
+    int eligible = 0;
+    for (int i = 0; i + 2 < cgraph->n_nodes; ++i) {
+        const ggml_tensor * a = cgraph->nodes[i];
+        const ggml_tensor * b = cgraph->nodes[i + 1];
+        const ggml_tensor * glu = cgraph->nodes[i + 2];
+        if (a->op != GGML_OP_MUL_MAT || b->op != GGML_OP_MUL_MAT || glu->op != GGML_OP_GLU) {
+            continue;
+        }
+        ++candidates;
+        const ggml_tensor * wa = a->src[0];
+        const ggml_tensor * wb = b->src[0];
+        const ggml_tensor * xa = a->src[1];
+        const ggml_tensor * xb = b->src[1];
+        const ggml_tensor * tensors[] = { a, b, glu, wa, wb, xa, xb };
+        bool allocated = true;
+        bool contiguous = true;
+        for (const ggml_tensor * tensor : tensors) {
+            allocated = allocated && tensor && tensor->buffer && tensor->data;
+            contiguous = contiguous && tensor && ggml_is_contiguous(tensor);
+        }
+        const bool shared_input = xa && xa == xb;
+        const bool glu_links = (glu->src[0] == a && glu->src[1] == b) ||
+                               (glu->src[0] == b && glu->src[1] == a);
+        // Match ggml_cuda_can_fuse: first node is gate, second node is up.
+        const bool mul_mat_fusible = wa && wb && ggml_cuda_should_fuse_mul_mat(b, a, glu);
+        const bool swiglu = ggml_get_glu_op(glu) == GGML_GLU_OP_SWIGLU && ggml_get_op_params_i32(glu, 1) == 0;
+        const bool pq2 = wa && wb && wa->type == GGML_TYPE_PQ2_0 && wb->type == GGML_TYPE_PQ2_0;
+        const bool f32 = xa && xb && xa->type == GGML_TYPE_F32 && xb->type == GGML_TYPE_F32 &&
+                         a->type == GGML_TYPE_F32 && b->type == GGML_TYPE_F32 && glu->type == GGML_TYPE_F32;
+        const int uses_a = ggml_node_get_use_count(cgraph, i);
+        const int uses_b = ggml_node_get_use_count(cgraph, i + 1);
+        const ggml_op ops[] = { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU };
+        const int outputs[] = { i + 2 };
+        const bool can_fuse = ggml_can_fuse_subgraph(cgraph, i, 3, ops, outputs, 1);
+        const bool ranges_ok = allocated && ggml_cuda_check_fusion_memory_ranges(cgraph, i, 3, outputs, 1);
+        const int64_t tokens = a->ne[1];
+        const bool shape = wa && wb && xa && xb &&
+            wa->ne[0] == 5120 && wa->ne[1] == 17408 && wa->ne[2] == 1 && wa->ne[3] == 1 &&
+            ggml_are_same_shape(wa, wb) && xa->ne[0] == 5120 && xa->ne[1] == tokens &&
+            xa->ne[2] == 1 && xa->ne[3] == 1 && ggml_are_same_shape(xa, xb) &&
+            a->ne[0] == 17408 && a->ne[2] == 1 && a->ne[3] == 1 &&
+            ggml_are_same_shape(a, b) && ggml_are_same_shape(a, glu);
+        const char * reason = cc != 860 ? "not_sm86" :
+            !swiglu ? "not_plain_swiglu" : !glu_links ? "glu_inputs_differ" :
+            !pq2 ? "not_pq2" : !f32 ? "not_f32" : !shared_input ? "different_activation" :
+            !mul_mat_fusible ? "mul_mat_structure" :
+            !shape ? "different_shape" : (tokens != 508 && tokens != 512) ? "other_token_width" :
+            !contiguous ? "noncontiguous" : !allocated ? "unallocated" :
+            (uses_a != 1 || uses_b != 1 || !can_fuse) ? "not_exclusive_or_not_fusible" :
+            !ranges_ok ? "memory_overlap" : nullptr;
+        const bool is_eligible = reason == nullptr;
+        eligible += is_eligible;
+        char desc[7][320];
+        for (int t = 0; t < 7; ++t) {
+            ggml_cuda_ffn_fusion_tensor(tensors[t], desc[t]);
+        }
+        GGML_LOG_INFO("CUDA_FFN_FUSION,event=candidate,graph_seq=%llu,uid=%llu,device=%d,cc=%d,index=%d,"
+                      "tokens=%lld,eligible=%d,reason=%s,shared_activation=%d,glu_links=%d,glu_first=%d,"
+                      "uses_a=%d,uses_b=%d,uses_glu=%d,output_a=%d,output_b=%d,can_fuse=%d,mul_mat_fusible=%d,ranges_ok=%d,"
+                      "dispatch=unknown,tile=unknown,stream_k=unknown,"
+                      "a=%s,b=%s,glu=%s,wa=%s,wb=%s,xa=%s,xb=%s\n",
+                      (unsigned long long) graph_seq, (unsigned long long) cgraph->uid, ctx->device, cc, i,
+                      (long long) tokens, (int) is_eligible, reason ? reason : "eligible", (int) shared_input, (int) glu_links,
+                      glu->src[0] == a ? 0 : glu->src[0] == b ? 1 : -1,
+                      uses_a, uses_b, ggml_node_get_use_count(cgraph, i + 2), (int) !!(a->flags & GGML_TENSOR_FLAG_OUTPUT),
+                      (int) !!(b->flags & GGML_TENSOR_FLAG_OUTPUT), (int) can_fuse, (int) mul_mat_fusible, (int) ranges_ok,
+                      desc[0], desc[1], desc[2], desc[3], desc[4], desc[5], desc[6]);
+    }
+    GGML_LOG_INFO("CUDA_FFN_FUSION,event=graph,graph_seq=%llu,uid=%llu,device=%d,cc=%d,candidates=%d,eligible=%d\n",
+                  (unsigned long long) graph_seq, (unsigned long long) cgraph->uid, ctx->device, cc, candidates, eligible);
+}
+
 static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
     ggml_cuda_set_device(cuda_ctx->device);
+
+    if (ggml_cuda_ffn_fusion_debug_enabled()) {
+        ggml_cuda_debug_ffn_fusion(cuda_ctx, cgraph);
+    }
 
     bool use_cuda_graph             = false;
     bool cuda_graph_update_required = false;

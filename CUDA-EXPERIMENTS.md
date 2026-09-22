@@ -620,3 +620,19 @@ Combined with the sequential growth/repeated-prompt checks, CUDA reference tests
 The FFN diagnostic v2 passed independent source review after canonical operand-order eligibility was added. It is inert unless DEBUG_CUDA_FFN_FUSION is exactly 1. Runtime eligibility is still unproven.
 
 The exact K5120/17408-row fused PQ2 decode unroll passed independent spec and quality review. The generic loop, eligibility guards, ordered accumulations, four-warps/four-rows layout and epilogue are preserved. Four exact-shape reference tests cover SWIGLU/GEGLU with biases off/on. Source and static proof are preserved as `cuda-pq2-k5120-unroll-source.patch` and `cuda-pq2-k5120-unroll-static-proof.json`. No speed claim before compilation, CUDA correctness, SASS inspection and actual-service comparison.
+
+
+### 025 build and CUDA reference checks passed
+
+Build completed exit 0 in `cuda-build-pq2-k5120-unroll.txt`. CUDA fusion passed 44/44 cases, including all four exact 5120 x 17408 specializations; PQ2 MUL_MAT passed 101/101. The allocator failure/retry suite passed 6/6. Full stdout/stderr artifacts are `cuda-k5120-{fusion,mulmat,alloc}.*.txt`. The 11-file candidate snapshot `tools/llamacpp-cuda-k5120-unroll` was hash-verified against build output (`cuda-k5120-unroll-binary-hashes.json`). The candidate includes the separately reviewed FFN eligibility diagnostic, disabled during performance tests.
+
+The persistent Prism launcher opt-in was applied after verifying its exact pre-change backup SHA256, and its PowerShell AST parses without errors. Lazy allocation code/checker/log integration was committed and pushed as 2110377e. Supervisor maintenance remains active during the next controlled trial window.
+
+
+### 024 diagnostic runtime result: partial fusion eligibility
+
+`cuda-ffn-fusion-k5120-diagnostic-requests.jsonl` completed exit 0 on the candidate service with diagnostics enabled. Both 32-token output prefixes match the retained service. In each of two 508-token graphs, all 64 FFN groups were found: 40 pass structural/memory eligibility, 24 fail memory_overlap. Width 1/2/4 groups are excluded. Evidence: `cuda-ffn-fusion-k5120-diagnostic.log` and `cuda-ffn-fusion-k5120-diagnostic-summary.json`. The original all-64 logical traffic-saving estimate is therefore an upper bound, not the immediately eligible scope. Diagnostic rates are not throughput acceptance.
+
+### 025 generated-code risk and service comparison start
+
+cuobjdump reports 100 registers for the specialized fused kernel versus 37 for the retained/generic fused kernel; both have zero stack/local/shared usage in resource metadata. Unrolling can increase live values and reduce occupancy; no performance conclusion follows without service measurement. Fresh retained control A starts with lazy allocation enabled, diagnostics off and unchanged production arguments. Candidate comparison will use the same conditions and preserved snapshot.
