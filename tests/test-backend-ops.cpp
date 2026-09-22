@@ -9309,6 +9309,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         for (bool bias : {false, true}) {
             test_cases.emplace_back(new test_mul_mat_vec_fusion(GGML_TYPE_PQ2_0, op, 1, 67, 5120,
                 false, 1, 1, false, bias, true, false, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat_vec_fusion(GGML_TYPE_PQ2_0, op, 1, 17408, 5120,
+                false, 1, 1, false, bias, true, false, {1, 1}));
         }
     }
 

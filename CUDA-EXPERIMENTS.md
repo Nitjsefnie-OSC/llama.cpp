@@ -636,3 +636,47 @@ The persistent Prism launcher opt-in was applied after verifying its exact pre-c
 ### 025 generated-code risk and service comparison start
 
 cuobjdump reports 100 registers for the specialized fused kernel versus 37 for the retained/generic fused kernel; both have zero stack/local/shared usage in resource metadata. Unrolling can increase live values and reduce occupancy; no performance conclusion follows without service measurement. Fresh retained control A starts with lazy allocation enabled, diagnostics off and unchanged production arguments. Candidate comparison will use the same conditions and preserved snapshot.
+
+
+### 025 generated-code analysis completed
+
+`cuda-pq2-k5120-sass-comparison.json` records exact binary hashes, resource counts and FFMA chains. The specialized fused kernel removes runtime K loading and the loop back-edge while preserving five sequential dependent accumulator updates. Both generic fused and unfused SASS instruction/address text remain identical to the retained snapshot. Static instruction slots grow from 248 to 768 and code size from 3968 to 12288 bytes. There are no local-memory load/store instructions or reported spills.
+
+The compiler hoisted all 95 dot-product global loads (five groups of 19) before the first accumulation FFMA at 0x1230, increasing registers from 37 to 100. Using local cuda_occupancy.h register rounding and SM86 resource limits, the static ceiling falls from 12 CTAs / 48 warps to 4 CTAs / 16 warps for the 128-thread launch. This is inferred occupancy, not a measured runtime count. The initial SASS command failed because nvdisasm was absent from PATH; the corrected run used the tool-local NVDISASM_PATH and retained the failed artifact. All such analysis is separate from throughput acceptance.
+
+
+### 025 fresh control A completed
+
+`cuda-service-k5120-control-a.jsonl` completed exit 0 (PID 2584, monitor 54475). All eight exact request/token/content records match the retained lazy-enabled reference. Medians: 512 ingest 405.586 / output 35.025 tok/s, wall 8.5503 s; 4096 ingest 516.275 / output 32.797, wall 15.7142 s. Candidate A follows with the same launcher flags, lazy allocation enabled and all diagnostics off.
+
+
+### 026 preregistration: staged prefill FFN fusion
+
+The 24 excluded T508 groups reuse the activation address as the GLU output (10,403,840 overlapping activation bytes); preserve the canonical memory rejection. The 40 eligible groups also have mutually disjoint gate/up/GLU outputs. First test a staged fusion: quantize shared activation once, retain ordinary gate MMQ, and compute up with a dedicated complete-K tile whose final store applies SiLU(gate) * up. This removes one activation quantization, the standalone GLU launch, and up intermediate write/read, approximately 2.635 GiB logical traffic over 40 groups. Gate traffic and graph-reserved buffers remain.
+
+Restrict to SM86, contiguous PQ2 K5120/17408-row weights, shared contiguous F32 activation, T508 or512, plain SwiGLU without bias/scales, singleton higher dimensions, exclusive intermediates and validated disjoint ranges. The proposed up tile uses I128/J128, 256 threads and a136 x4 grid, consuming all40 PQ2 K-blocks before nonlinear writeback. This changes up scheduling from generic stream-K to one complete-K CTA per output tile; never apply nonlinear activation before partial-sum fixup. Gate dispatch remains unchanged. Independent design review precedes implementation.
+
+Planning prediction is 1-3% prefill improvement, no decode improvement, with possible regression from scheduling/register effects. Acceptance requires repeated actual-service comparisons with at least2% improvement in both512 and4096 ingest medians and no more than2% output regression, exact generated tokens/content, CPU-reference fused-graph checks and service growth/concurrency checks. All diagnostics must be off for timing. A fully paired gate/up accumulator design is deferred because its doubled accumulator/shared-memory cost is substantially higher.
+
+
+### 025 rejected: no service output gain
+
+`cuda-service-k5120-candidate-a.jsonl` completed exit 0 (PID23592, monitor37680). All eight exact requests, generated tokens and content match fresh control A. Measured medians:
+
+| Prompt | Control ingest | Candidate ingest | Change | Control output | Candidate output | Change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 405.586 | 412.774 | +1.772% | 35.025 | 34.904 | -0.347% |
+| 4096 | 516.275 | 508.152 | -1.573% | 32.797 | 32.830 | +0.101% |
+
+Wall medians regressed 0.532% and0.871%. The preregistered >=3% output gain failed by a wide margin; do not claim a win or keep the specialization. Source mmvq.cu was reversed with its exact saved patch and verified identical to retained HEAD. Exact-shape correctness cases remain useful coverage. Candidate source, static proofs, disassemblies, build output, binary snapshot and all trials are preserved. No further candidate timing repeats are needed to retain a change that has no demonstrated gain.
+
+The stable executable path was redeployed from the accepted lazy-reserve snapshot; deployment receipt `bonsai-deploy-20260922T221853575-a4199de488374a2194e3569d155b3569.json`. The original supervisor was restored byte-for-byte to SHA25654af3284fda7d5a446f5df8c7a82121444576fff96283d7eea21dbf7362142be and its scheduled task started. The permanent Prism launcher now enables lazy reservation. Ordinary service verification follows while next-candidate source work continues.
+
+
+### 025 rollback verification and retained coverage
+
+The ordinary supervised server is healthy on port8090 (PID22400); LlamaSupervisor returned0 and logs confirm four slots with188416 context per slot. All11 files at the stable deployment path match the accepted lazy-reserve snapshot hashes. The scheduled process command line is inaccessible from this user token, so binary provenance is established by launcher output and deployed hashes instead. The launcher explicitly sets the lazy opt-in before invoking Prism.
+
+The new44-case fusion suite was additionally run from an isolated test-executable directory with retained lazy-reserve DLLs on PATH. All44/44 pass, including the exact-shape cases, after reverting the unroll. Artifacts: `cuda-k5120-retained-fusion.stdout.txt` and stderr. This validates retained-kernel coverage independently of the rejected specialization.
+
+Experiment026 independent design review confirms complete-K ordering and fragment addressing, requires a57344-plus-ID shared allocation (57856 bytes from mmq_get_nbytes_shared), explicit T508 tail guards and a shared-memory attribute on the new kernel symbol, same-stream Q8 lifetime, and pairwise output-disjointness. The recorded T508 graphs do not prove T512 eligibility; both widths require runtime/reference checks. On this28-SM GPU, the current544-tile stream-K configuration already assigns544 full-K blocks at97% tile efficiency, so the proposed up wrapper need not change accumulation order for this geometry.
