@@ -680,3 +680,15 @@ The ordinary supervised server is healthy on port8090 (PID22400); LlamaSuperviso
 The new44-case fusion suite was additionally run from an isolated test-executable directory with retained lazy-reserve DLLs on PATH. All44/44 pass, including the exact-shape cases, after reverting the unroll. Artifacts: `cuda-k5120-retained-fusion.stdout.txt` and stderr. This validates retained-kernel coverage independently of the rejected specialization.
 
 Experiment026 independent design review confirms complete-K ordering and fragment addressing, requires a57344-plus-ID shared allocation (57856 bytes from mmq_get_nbytes_shared), explicit T508 tail guards and a shared-memory attribute on the new kernel symbol, same-stream Q8 lifetime, and pairwise output-disjointness. The recorded T508 graphs do not prove T512 eligibility; both widths require runtime/reference checks. On this28-SM GPU, the current544-tile stream-K configuration already assigns544 full-K blocks at97% tile efficiency, so the proposed up wrapper need not change accumulation order for this geometry.
+
+
+### Supervised service correctness confirmed
+
+`cuda-lazy-supervised-atomic.jsonl` passed all four slots against the controlled atomic reference with exact requests/tokens/content and unchanged probability tolerance. This verifies the ordinary supervised launcher after rollback, separately from the benchmark runner. Service health is OK; no candidate unroll is deployed. Experiment026 implementation continues in an isolated worktree while the accepted service remains available.
+
+
+### Reusable strict service comparison tooling
+
+Added `scripts/bonsai-server-compare.py` for complete JSONL validation, exact cross-condition requests/tokens/content, pooled measured medians and optional per-prompt speed/regression gates. It excludes warmups, recomputes rates from counts/timing durations, rejects incomplete or duplicate artifacts, records source hashes and preserves failure details in an exclusive JSON result. Eleven CPU test methods passed both implementation and independent review, then again after integration. The independent four-run023 smoke recomputed all recorded gains with six measured samples per condition/size.
+
+Applied the same tool to025 fresh control/candidate A. It passed correctness and returned exit1 specifically for the3% decode performance gate; both prompt sizes failed. Full comparison is `cuda-service-k5120-comparison.json`. No benchmark was rerun to generate these analysis artifacts.
