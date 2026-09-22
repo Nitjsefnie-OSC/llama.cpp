@@ -9297,6 +9297,21 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // PQ2_0 prefill: full and partial row tiles, column tails, and Bonsai-2 reduction widths.
+    for (int64_t m : {128, 129, 256, 257}) {
+        for (int64_t n : {65, 512}) {
+            for (int64_t k : {5120, 17408}) {
+                test_cases.emplace_back(new test_mul_mat(GGML_TYPE_PQ2_0, GGML_TYPE_F32, m, n, k, {1, 1}, {1, 1}));
+            }
+        }
+    }
+    for (ggml_glu_op op : {GGML_GLU_OP_SWIGLU, GGML_GLU_OP_GEGLU}) {
+        for (bool bias : {false, true}) {
+            test_cases.emplace_back(new test_mul_mat_vec_fusion(GGML_TYPE_PQ2_0, op, 1, 67, 5120,
+                false, 1, 1, false, bias, true, false, {1, 1}));
+        }
+    }
+
     // PTQ1_0 / PQ2_0 integer-dot mat-vec: Bonsai-2 shapes, odd row counts (row tail), batches and multi-column B
     for (int64_t n : {1, 2, 3, 4, 5, 6, 7, 8}) {
         for (int64_t k : {1024, 5120, 6144, 17408}) {

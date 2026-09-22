@@ -197,7 +197,6 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     constexpr int threads_per_row = blocks_per_iter * QI_PQ2_0;
     constexpr int nrows = warp_size / threads_per_row;
     constexpr int scale_entries_per_block = QK_PQ2_0 / QK8_1;
-    constexpr int scale_entries_per_row = blocks_per_iter * scale_entries_per_block;
 
     const int txi  = threadIdx.x % threads_per_row;
     const int kbx  = txi / QI_PQ2_0;
@@ -238,21 +237,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
             x_qs[i*(2*MMQ_TILE_NE_K + 1) + dst_offset + j*2+1] = qy;
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         }
-    }
-
-    const int ksx = threadIdx.x % scale_entries_per_row;
-    const int scale_block = ksx / scale_entries_per_block;
-
-#pragma unroll
-    for (int i0 = 0; i0 < I; i0 += nwarps) {
-        int i = i0 + threadIdx.y;
-
-        if (fallback) {
-            i = min(i, i_max);
-        }
-
-        const block_pq2_0 * bxi = (const block_pq2_0 *) x + kbx0 + i*stride + scale_block;
-
+        const int ksx = kbx*scale_entries_per_block + kqsx;
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         x_df[i*sram_stride                           + ksx] = bxi->d;
 #else

@@ -18,10 +18,13 @@ def main():
     parser.add_argument("--prompts", default="512,4096")
     parser.add_argument("--tokens", type=int, default=256)
     parser.add_argument("--reps", type=int, default=3)
+    parser.add_argument("--pid", type=int, help="Windows server PID for dedicated/shared GPU memory counters")
     args = parser.parse_args()
     sizes = [int(n) for n in args.prompts.split(",")]
     if min(sizes) < 1 or args.tokens < 1 or args.reps < 1:
         parser.error("Prompt lengths, tokens and repetitions must be positive")
+    if args.pid is not None and args.pid < 1:
+        parser.error("pid must be positive")
 
     def request(route, body=None):
         data = None if body is None else json.dumps(body).encode()
@@ -35,6 +38,18 @@ def main():
             "nvidia-smi", "--query-gpu=temperature.gpu,clocks.sm,clocks.mem,power.draw,memory.used,utilization.gpu",
             "--format=csv,noheader,nounits"], capture_output=True, text=True, check=True)
         return result.stdout.strip()
+
+    def process_memory():
+        if args.pid is None:
+            return None
+        command = (
+            "$ErrorActionPreference='Stop'; "
+            f"(Get-Counter '\\GPU Process Memory(pid_{args.pid}_*)\\Dedicated Usage',"
+            f"'\\GPU Process Memory(pid_{args.pid}_*)\\Shared Usage').CounterSamples "
+            "| Select-Object Path,CookedValue | ConvertTo-Json -Compress"
+        )
+        return json.loads(subprocess.check_output(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command], text=True))
 
     props = request("/props")
     if max(sizes) + args.tokens > props["default_generation_settings"]["n_ctx"]:
@@ -52,7 +67,8 @@ def main():
 
         record({"kind": "metadata", "url": args.url, "props": props,
                 "gpu_fields": "temperature,sm_clock,memory_clock,power,memory_used,utilization",
-                "gpu": gpu(), "sizes": sizes, "tokens": args.tokens, "reps": args.reps})
+                "gpu": gpu(), "server_pid": args.pid, "process_memory": process_memory(),
+                "sizes": sizes, "tokens": args.tokens, "reps": args.reps})
         rows = []
         for repetition in range(args.reps + 1):
             for size in sizes:
@@ -62,6 +78,7 @@ def main():
                         "temperature": 0, "seed": 1234, "ignore_eos": True,
                         "cache_prompt": False, "id_slot": 0, "return_tokens": True}
                 before = gpu()
+                memory_before = process_memory()
                 start = time.perf_counter()
                 response = request("/completion", body)
                 elapsed = time.perf_counter() - start
@@ -71,6 +88,7 @@ def main():
                 row = {"kind": "trial", "warmup": repetition == 0, "repetition": repetition,
                        "prompt_tokens": size, "wall_seconds": elapsed, "gpu_before": before,
                        "gpu_after": gpu(), "request": body, "response": response,
+                       "process_memory_before": memory_before, "process_memory_after": process_memory(),
                        "content_sha256": hashlib.sha256(response["content"].encode()).hexdigest()}
                 record(row)
                 if repetition:

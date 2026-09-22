@@ -990,6 +990,59 @@ static void mul_mat_vec_q_moe_launch(
         ncols_dst, ids_stride);
 }
 
+template <bool has_gate>
+__launch_bounds__(128, 1)
+static __global__ void mul_mat_vec_pq2_0_warp(
+        const void * __restrict__ x, const block_q8_1 * __restrict__ y, float * __restrict__ dst,
+        const int ncols, const int nrows, const int stride_row,
+        const ggml_cuda_mm_fusion_args_device fusion) {
+    const int row = blockIdx.x * 4 + threadIdx.y;
+    if (row >= nrows) {
+        return;
+    }
+
+    ggml_cuda_pdl_sync();
+    float sum = 0.0f;
+    float gate_sum = 0.0f;
+    for (int chunk = threadIdx.x; chunk < ncols / QK8_1; chunk += 32) {
+        const int block = chunk / 4;
+        const int part = chunk % 4;
+        sum += vec_dot_pq2_0_q8_1(x, y + block * 4, row * stride_row + block, part);
+        if constexpr (has_gate) {
+            gate_sum += vec_dot_pq2_0_q8_1(fusion.gate, y + block * 4, row * stride_row + block, part);
+        }
+    }
+    sum = warp_reduce_sum<32>(sum);
+    if constexpr (has_gate) {
+        gate_sum = warp_reduce_sum<32>(gate_sum);
+    }
+    if (threadIdx.x == 0) {
+        if (fusion.x_bias) {
+            sum += ((const float *) fusion.x_bias)[row];
+        }
+        if constexpr (has_gate) {
+            if (fusion.gate_bias) {
+                gate_sum += ((const float *) fusion.gate_bias)[row];
+            }
+            switch (fusion.glu_op) {
+                case GGML_GLU_OP_SWIGLU:
+                    sum *= ggml_cuda_op_silu_single(gate_sum);
+                    break;
+                case GGML_GLU_OP_GEGLU:
+                    sum *= ggml_cuda_op_gelu_single(gate_sum);
+                    break;
+                case GGML_GLU_OP_SWIGLU_OAI:
+                    sum = ggml_cuda_op_swiglu_oai_single(gate_sum, sum);
+                    break;
+                default:
+                    sum *= gate_sum;
+                    break;
+            }
+        }
+        dst[row] = sum;
+    }
+}
+
 template <ggml_type type>
 static void mul_mat_vec_q_switch_ncols_dst(
         const void * vx, const void * vy, const int32_t * ids, const ggml_cuda_mm_fusion_args_device fusion, float * dst,
@@ -1013,6 +1066,23 @@ static void mul_mat_vec_q_switch_ncols_dst(
     const mmvq_parameter_table_id table_id  = get_device_table_id(cc);
 
     const bool has_ids = ids != nullptr;
+
+    if constexpr (type == GGML_TYPE_PQ2_0) {
+        if (cc == 860 && ncols_dst == 1 && !has_ids && nchannels_x == 1 && nchannels_y == 1 &&
+                nchannels_dst == 1 && nsamples_x == 1 && nsamples_dst == 1 &&
+                fusion.x_scale == nullptr && fusion.gate_scale == nullptr) {
+            const ggml_cuda_kernel_launch_params params(
+                dim3((nrows_x + 3) / 4), dim3(32, 4), 0, stream);
+            if (fusion.gate) {
+                ggml_cuda_kernel_launch(mul_mat_vec_pq2_0_warp<true>, params,
+                    vx, (const block_q8_1 *) vy, dst, ncols_x, nrows_x, stride_row_x, fusion);
+            } else {
+                ggml_cuda_kernel_launch(mul_mat_vec_pq2_0_warp<false>, params,
+                    vx, (const block_q8_1 *) vy, dst, ncols_x, nrows_x, stride_row_x, fusion);
+            }
+            return;
+        }
+    }
 
     // How the K loop divides up at the baseline block width, both decisions below use these.
     constexpr int qk                    = ggml_cuda_type_traits<type>::qk;
