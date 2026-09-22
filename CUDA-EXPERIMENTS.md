@@ -1120,3 +1120,12 @@ After inspecting idle baseline18904, stopped it and deployed tools/llamacpp-cuda
 Applied the exact reviewed032patch on top of accepted030commit10bd19e6d8d709d4750bfb8da86c1e9046fbf53f. Canonical CUDA12.9.1/SM86 Release build completed exit0 in58.98s; full logs and command/exit/timing are cuda-build-pq2-block-index.txt and .exit.json. All11 files copied exclusively and hash-verified in tools/llamacpp-cuda-pq2-block-index; manifest cuda-pq2-block-index-binary-hashes.json, CUDA SHA25672d45521bb02021bce2967660e96e47c98d6dcfef4a095f02f200780f8b353d0. Independent assembly/resource checks against the exact newly retained030DLL are pending before any GPU testing. The normal service remains on all11 verified030hashes.
 
 After030landed, its author worktree was removed only after verifying all seven modified files matched committed10bd19e6 byte-for-byte, no untracked/ignored files existed, and the preservedV3patch hash matched. Its branch/logs/patch and the separate032worktree remain.
+
+
+### 032 rejected at the preregistered static gate
+
+Independent assembly review found ordinary registers42->46 and fused37->43, both above the unchanged ceilings. Address-generation savings were12 instructions/chunk in ordinary but only3 in fused (required>=6). Ordinary paired loop instructions172->145 and code5120->4736 bytes; fused single-loop138->136 and code3968->4224 bytes. Zero stack/local/spills, preserved loop expansion/load counts/widths/ordered dot/FP32 arithmetic/tails/geometry passed inspection.
+
+The compiler retained weight pointers across iterations; fused maintenance of four scale/payload pointers offset most address savings and increased live state. Fused43 registers cross the40-register allocation tier. This is a static resource failure, not a measured throughput regression. Reject without any032GPU/reference/service run, preserving the predeclared gate. Full baseline/candidate SASS with command/hash metadata, comparison and instruction-level gate evidence are cuda-pq2-block-index-sass-*.txt/json and cuda-pq2-block-index-static-gates.json.
+
+Reversed the exact032source patch and verified mmvq.cu equals retainedHEAD. Preserved patch, snapshot, build logs and disassembly evidence. Normal service remains on accepted030; still three validated wins.
