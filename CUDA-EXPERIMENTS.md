@@ -263,3 +263,83 @@ Same CUDA toolchain, same serving flags, warmup plus three measured repetitions.
 - Prefill's 48 GATED_DELTA_NET calls total 201.450 ms (17.32% of operation sum). Main FFN PQ2 projections total 493.170 ms (42.41%). Decode's fused gate PQ2 projections total 63.918 ms (21.80%). The pipeline experiment targets the dominant prefill matrices; a separate read-only investigation is examining the recurrent attention cost.
 - The SM86/J128 shared-memory calculation is 57,856 bytes (56.5 KiB) baseline and 76,288 bytes (74.5 KiB) with two Y buffers: X=38,912, ids=512, each Y=18,432. This corrects the approximate preregistration sizing; the one-CTA residency hypothesis is unchanged.
 - Tooling received independent review with no blocking issue. The real verbosity-4 profile verifies the logging integration after mocked tests. Parser phase fixes additionally passed 11 synthetic checks including the auxiliary-matrix counterexample.
+
+## 013 control run before asynchronous candidate
+
+- Fresh normal (profiling off) service at the stable approved path, still the 6295 kernel binary: pp512 400.05 tok/s / output 33.67 tok/s; pp4096 509.36 tok/s / output 31.66 tok/s. Three measured repetitions after warmup, 256 output tokens. Artifact: cuda-service-warp-scale-stablepath-a.jsonl.
+- Ingestion recovered from repeat B's 381.21 to 509.36 tok/s after a restart with unchanged kernel code. This is evidence of instance/environment sensitivity, not proof of its cause. The new run is the immediate control for experiment 013.
+- Candidate source patch retained in cuda-mmq-async-source.patch. Host allocation predicate uses highest compiled CUDA architecture so a compatible newer device cannot execute the SM86 two-buffer specialization with one-buffer allocation.
+- Build output: cuda-build-mmq-async.txt. No service throughput measurement overlaps this compilation.
+- First measured trial process memory: [{"Path": "\\\\conpc53\\gpu process memory(pid_5388_luid_0x00000000_0x0000fa7a_phys_0)\\dedicated usage", "CookedValue": 12097953792}, {"Path": "\\\\conpc53\\gpu process memory(pid_5388_luid_0x00000000_0x0000fa7a_phys_0)\\shared usage", "CookedValue": 385875968}]
+
+## 014 - Raw-gate precomputation: preregistered next experiment
+
+- Actual-service graph 11 recurrent-attention timings: 48 nodes, 201.449 ms total, median 3.170 ms; 37/48 below 3.4 ms. First two nodes cost 19.468 and 23.201 ms. The outliers leave an estimated 152.175 ms steady floor and do not establish a residency cause.
+- Source: gated_delta_net.cu launches SM86 at one state column per warp and processes tokens sequentially. RAW gates repeatedly evaluate beta sigmoid and decay softplus/exp in each column warp. Bonsai uses RAW gates, so the existing GB10 activated-gate precompute path does not apply.
+- Hypothesis: for SM86, scalar RAW gates, state width 128 and at least 32 input tokens, compute sigmoid(beta) and final exp(raw_a*softplus(g+dt_bias)) once per token/head, then use the existing non-RAW/precomputed recurrence. Decode and shorter inputs retain their current paths.
+- Prediction: 15-30% reduction in steady GATED_DELTA_NET time, approximately 2-4% overall prefill operation time. Actual-service gain must exceed variation; this is an unmeasured prediction and is not additive with experiment 013.
+- Implementation is prepared in a separate temporary git worktree while experiment 013 compiles. It will not enter the main build or service until the current comparison completes. One temporary pool allocation for both activated beta and decay; test threshold, sequence/head indexing, and snapshot/final-state outputs against CPU reference.
+
+## 013 build and correctness
+
+- Build succeeded. 101/101 PQ2 matrix cases passed, including full/tail prefill shapes; 40/40 PQ2 fusion cases passed. This matrix filter is broader than the earlier 48-case subset.
+- First fusion invocation accidentally used the matrix parameter name type_a=pq2_0; it matched 0/0 cases. Rejected that empty pass, corrected to type=pq2_0, and required a nonzero passed count. Both failed-filter and corrected artifacts are retained.
+- Snapshot tools/llamacpp-cuda-mmq-async and cuda-mmq-async-binary-hashes.json preserve verified candidate files. Independent source review found matching host/device allocation, identical source ranges/alignment, and correctly ordered copy completion/barriers.
+- Deploying through the stable firewall-approved path for the actual-service trial; original and previous packages remain preserved in deployment backups.
+
+## 013 first service result - admission failed; restoring control
+
+| Prompt | Control ingest | Async ingest | Control output | Async output |
+|---:|---:|---:|---:|---:|
+| 512 | 400.05 | 329.25 | 33.67 | 34.48 |
+| 4096 | 509.36 | 390.95 | 31.66 | 32.37 |
+
+- Artifact cuda-service-mmq-async-a.jsonl; identical request bodies and exact generated-content hashes in 8/8 trials. The candidate misses the ingestion threshold and increases 4K request wall time from 16.100 to 18.368 s.
+- Output changed despite an ingestion-only patch, and previous unchanged-binary ingestion also varied between roughly 381 and 509. Therefore this trial does not isolate the source of the regression. Restoring the control for an order reversal before final disposition.
+- Candidate end-of-run process memory: dedicated 12112605184 bytes, shared 371195904 bytes. Control: dedicated 12097953792, shared 385875968. The slow candidate actually had more dedicated and less shared memory, so raw shared-allocation count alone does not explain this trial.
+- Reverted the two source predicates using the preserved exact patch; candidate binaries, source patch, logs and hashes remain available. No candidate change is retained from this failed trial.
+
+## 014 source review and integration for the next build
+
+- Independent source review passed: raw activation formulas match, shape guards preserve head/sequence indexing and retained strides, pool lifetime covers both kernels on the same stream, snapshots/cache outputs are unchanged, decode incurs no new allocation/device query, and existing GB10 activated-gate behavior remains.
+- Added eight CPU-reference cases at T=31/32/33/508, two sequences and repeated value heads, covering final state and four snapshots. Build/runtime gates remain pending.
+- Applied the preserved cuda-gdn-raw-source.patch to the main working tree after reverting experiment 013. The running service is still the prior control binary; no compilation or new GPU correctness run overlaps its comparison.
+
+## 013 control reversal; 014 build started
+
+- Control rerun pp512: ingestion 405.37 tok/s, output 35.74 tok/s, wall 8.411 s.
+- Control rerun pp4096: ingestion 525.71 tok/s, output 33.77 tok/s, wall 15.324 s.
+- Control artifact: cuda-service-warp-scale-stablepath-b.jsonl. Experiment 013 remains rejected for lack of demonstrated service ingestion gain; preserved artifacts allow revisiting with tighter environmental control.
+- Started the raw-gate candidate build only after the control requests completed. Build log: cuda-build-gdn-raw.txt.
+
+## 014 build and correctness passed
+
+- Build passed; all 11 supported raw-gate CPU-reference cases passed, including all eight new threshold/multi-sequence/state-snapshot cases. One pre-existing rows-mode case remains explicitly unsupported on CUDA and is not counted as a pass.
+- Candidate snapshot: tools/llamacpp-cuda-gdn-raw; hashes: cuda-gdn-raw-binary-hashes.json. Test artifacts: cuda-gdn-raw-correctness.stdout.txt and matching stderr.
+- Starting service comparison with unchanged context188416, automatic four slots, Q4 KV, batch512, and exact benchmark requests. CUDA profiling is off.
+
+## 015 - Decode unpack algebra investigation: rejected before implementation
+
+- Read-only investigation of PQ2 unpack sought a cheaper bitplane dot plus Q8_1 sum correction without increasing model VRAM. PQ2 codes decode 00/01/10/11 as -1/0/+1/+2; code 11 is defined and cannot be discarded.
+- Current arithmetic is d2*d8*sum((code-1)*q8), using eight DP4A operations per 32-value chunk. Q8_1 ds[1] contains FP16(sum(original floating activations)), not d8*sum(integer q8). Substituting it changes numerical behavior.
+- Concrete arithmetic counterexample: activations [1,0.1,0,...], all-zero ternary weights: current result zero, proposed ds[1] correction 0.002685546875. Rejected this proposed shortcut; no CUDA implementation or service trial was performed.
+- Exact integer bitplane correction requires additional sums/DP4A work and has no evident instruction-count advantage. Blanket 32-bit packed loads also fail alignment: chunk offset 34*block+2+8*part is only two-byte aligned in even blocks; aligned-down reconstruction needs extra work and careful end-of-buffer handling. Retain current LUT path for now.
+
+## 016 - Eight-row PQ2 decode blocks: preregistered next experiment
+
+- The actual-service decode profile is dominated by PQ2 projections. The retained fast path assigns one warp per output row and groups four rows into each 128-thread block.
+- Hypothesis: grouping eight rows into a 256-thread block reduces block scheduling overhead while retaining exactly the same dot arithmetic and one-warp reduction. Register allocation/residency may instead negate the gain; this is an experiment, not an asserted optimization.
+- Change: one shared rows-per-block constant controls launch bounds, row indexing, grid rounding and block dimensions. Restrict to the existing SM86/single-column fast path; all fusion eligibility and arithmetic remain unchanged.
+- Prediction: at least 3% actual-service output gain, with ingestion unchanged. Reject changes within variation or with material regressions. Existing odd-row and fused-gate correctness cases cover the row tail. Prepare the source patch in isolation; no service or build overlap with experiment 014's benchmark.
+
+## 014 service result - not retained
+
+| Prompt | Control ingest | Raw-gate candidate ingest | Control output | Candidate output |
+|---:|---:|---:|---:|---:|
+| 512 | 405.37 | 441.00 | 35.74 | 34.52 |
+| 4096 | 525.71 | 521.03 | 33.77 | 32.47 |
+
+- Artifact cuda-service-gdn-raw-a.jsonl. Exact request bodies and generated-content hashes matched in 8/8 trials; all11supportedCPU-referencecasespassed before service testing.
+- Short-prompt ingestion improved 8.8%, but 4K ingestion did not improve, and total wall times rose (512:8.411->8.584s;4K:15.324->15.717s). This does not meet the predicted useful service gain. Revert the candidate rather than retain extra allocation/launch work on inconclusive evidence.
+- End-of-run dedicated/shared memory was exactly equal between this candidate and its immediate control (12116791296/367001600 bytes). Decode also changed despite the prefill-only source change, so small causal claims remain uncertain. Rejection is for lack of demonstrated service benefit, not a proven numerical or isolated-kernel failure.
+- Source/binary/test artifacts remain preserved. The next experiment returns to the retained one-warp/fused-scale baseline and only changes decode block grouping.
