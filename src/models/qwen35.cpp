@@ -142,12 +142,17 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
 
     // one pass over the devices for the per-layer path choices; ggml_backend_dev_type used to be a
     // full cudaGetDeviceProperties per call, and this ran twice per recurrent layer
+    gdn_indexed_state_dev_ok = !model.devices.empty();
     for (const auto & ldev : model.devices) {
         if (ldev.dev == nullptr) {
+            gdn_indexed_state_dev_ok = false;
             continue;
         }
         ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ldev.dev);
         const char * reg_name = reg ? ggml_backend_reg_name(reg) : nullptr;
+        if (reg_name == nullptr || strcmp(reg_name, "CUDA") != 0) {
+            gdn_indexed_state_dev_ok = false;
+        }
         if (reg_name == nullptr) {
             gdn_state_rows_dev_ok = false;
             gdn_raw_gates_dev_ok  = false;
@@ -473,16 +478,22 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_linear(
     // ring path: read per-seq live state directly from the cache inside the
     // fused GDN op (rows mode) instead of a gather per layer.
     // GGML_GDN_STATE_GATHER=1 restores the legacy gathered path (A/B).
-    // rows mode (the src[6] variant) is implemented on CPU and Metal only;
+    // ring rows mode is implemented on CPU and Metal only;
     // other GPU backends reject it in supports_op, which would silently move
     // the whole recurrent op to CPU -- keep the gathered form unless every
     // GPU device in the model is Metal.
     static const bool gdn_state_rows_env = getenv("GGML_GDN_STATE_GATHER") == nullptr;
 
     const bool gdn_state_rows = gdn_state_rows_env && gdn_state_rows_dev_ok && cparams.n_rs_seq > 0;
+    // No extra relocation may overwrite a deferred state read. Keep K=1's fused cache CPY.
+    const bool gdn_indexed_state = gdn_state_rows_env && gdn_indexed_state_dev_ok &&
+        cparams.n_rs_seq == 0 && cparams.fused_gdn_ar && n_seq_tokens == 1 && n_seqs == 1 &&
+        mctx_cur->get_n_rs() == 1 && head_v_dim == 128 && head_k_dim == 128 && num_v_heads == 48 &&
+        num_k_heads > 0 && num_v_heads % num_k_heads == 0 && hparams.n_embd_s() == 128*128*48 &&
+        ssm_states_all->type == GGML_TYPE_F32 && ggml_is_contiguous(ssm_states_all);
 
     ggml_tensor * state;
-    if (gdn_state_rows) {
+    if (gdn_state_rows || gdn_indexed_state) {
         state = build_rs_cache_view(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
         cb(state, "state_cache_view", il);
     } else {
@@ -560,7 +571,7 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_linear(
     cb(v_conv, "v_conv_predelta", il);
 
     ggml_tensor * output = build_recurrent_attn(inp, ssm_states_all, q_conv, k_conv, v_conv, gate, beta, state, il,
-            gdn_state_rows ? inp->s_copy_main : nullptr);
+            (gdn_state_rows || gdn_indexed_state) ? inp->s_copy_main : nullptr);
 
     // z: [head_dim, n_heads, n_tokens, n_seqs] -> [n_heads * n_tokens * n_seqs, head_dim]
     ggml_tensor * z_2d = ggml_reshape_4d(ctx0, z, head_v_dim, num_v_heads, n_seq_tokens, n_seqs);

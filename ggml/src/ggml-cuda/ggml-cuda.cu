@@ -2828,6 +2828,19 @@ static int ggml_cuda_try_gdn_cache_fusion(
         return 0;
     }
 
+    if (gdn->src[6]) {
+        const ggml_tensor * input = gdn->src[5];
+        const uintptr_t src_begin = (uintptr_t) input->data;
+        const uintptr_t src_end   = src_begin + ggml_nbytes(input);
+        const uintptr_t dst_begin = (uintptr_t) dst->data;
+        const uintptr_t dst_end   = dst_begin + ggml_nbytes(dst);
+        // In-place reads are safe only for whole rows: CTAs own disjoint columns.
+        if (dst_begin < src_end && src_begin < dst_end &&
+            (dst_begin < src_begin || dst_end > src_end || (dst_begin - src_begin) % input->nb[1] != 0)) {
+            return 0;
+        }
+    }
+
     fused_state_cpy.data        = (float *) dst->data; // rollback group 0 (newest)
     fused_state_cpy.slot_stride = K > 1 ? (int64_t) (dst->nb[2] / sizeof(float)) : 0;
     return skip;
@@ -5748,10 +5761,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_RWKV_WKV7:
             return true;
         case GGML_OP_GATED_DELTA_NET:
-            // rows-indexed state read (src[6]) not implemented on CUDA yet;
-            // reject so it falls back instead of silently reading src[5] as a scratch
             if (op->src[6] != NULL) {
-                return false;
+                return ggml_cuda_gated_delta_net_rows_supported(op);
             }
             //TODO: enable once MUSA compiler is solved https://github.com/ggml-org/llama.cpp/pull/19504#issuecomment-4018634327
 #ifdef GGML_USE_MUSA

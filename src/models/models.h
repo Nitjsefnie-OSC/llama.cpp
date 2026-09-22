@@ -46,7 +46,7 @@ struct llm_build_delta_net_base : public llm_graph_context {
                 ggml_tensor * s,
                 int           il);
 
-    // use the ggml_gated_delta_net fused operator (K=1; state has shape [S_v, S_v, H_v, n_seqs])
+    // K=1; optional state_rows selects from a 2D cache instead of a gathered 4D state.
     std::pair<ggml_tensor *, ggml_tensor *> build_delta_net_fused(
                 ggml_tensor * q,
                 ggml_tensor * k,
@@ -54,7 +54,8 @@ struct llm_build_delta_net_base : public llm_graph_context {
                 ggml_tensor * g,
                 ggml_tensor * b,
                 ggml_tensor * s,
-                        int   il);
+                        int   il,
+                ggml_tensor * state_rows = nullptr);
 
     // choose one of two implementations above based on the number of tokens
     std::pair<ggml_tensor *, ggml_tensor *> build_delta_net(
@@ -79,11 +80,10 @@ struct llm_build_delta_net_base : public llm_graph_context {
     // run delta-net attention and write the new recurrent state(s) back to ssm_states_all
     // s: (head_v_dim, head_v_dim, num_v_heads, n_seqs); returns output: (head_v_dim, num_v_heads, n_seq_tokens, n_seqs)
     //
-    // state_rows (optional, ring path only): when set, `s` is instead the 2D
+    // state_rows (optional): when set, `s` is instead the 2D
     // cache view from build_rs_cache_view and the fused op reads each seq's
     // live state directly at cache row state_rows[seq] (inp->s_copy_main) --
-    // no gathered scratch; the snapshot write becomes a SET_ROWS the Metal
-    // backend can fold into the fused op's epilogue.
+    // no gathered scratch. Ring snapshots use SET_ROWS; K=1 keeps the cache CPY.
     // set per layer before build_recurrent_attn: the fused GDN op then receives the
     // pre-activation beta / alpha and folds sigmoid / softplus into its prologue
     // (ggml_gated_delta_net_set_raw_gates); the non-fused paths keep the activated g / b
@@ -2268,6 +2268,7 @@ struct llama_model_qwen35 : public llama_model_base {
 
         // device-dependent path choices, scanned once per graph build (not per layer)
         bool gdn_state_rows_dev_ok = true; // every GPU device is Metal: fused GDN may read state rows in place
+        bool gdn_indexed_state_dev_ok = true; // every device is CUDA: narrow K=1 indexed state read
         bool gdn_raw_gates_dev_ok  = true; // every device is CPU/Metal/CUDA/ROCm/MUSA: fused GDN takes raw gates
     private:
         ggml_tensor * build_layer_attn(

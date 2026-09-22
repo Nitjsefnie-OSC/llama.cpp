@@ -1087,3 +1087,29 @@ Source preparation will be isolated while030 service testing runs. No032 compila
 ### 032 source prepared and independently reviewed
 
 The isolated patch cuda-pq2-block-index-source.patch has SHA256fae10244959201334c0041626e42d73f822376a37e9987f560c4cf6dc2d96823 and changes only the requested loop (+2/-3 lines). Author and independent reviewer each verified16,384 lane/K combinations, including tails, and unchanged remaining source bytes. Source gate passed. The compiled gate remains unchanged: at least six fewer dynamic address instructions per chunk (12 per paired ordinary iteration), retained loop expansion/load widths/ordered arithmetic, registers<=42/37, zero stack/local/spills and unchanged32x4 geometry. No032 compilation/GPU work occurred during030 service measurements; patch integration waits for030 outcome.
+
+
+### 030 first uninstrumented service pair passed; reverse pair pending
+
+Fresh baseline19440 and candidate25584 each completed separate conditioning and three measured requests per prompt, with no profiler/debug instrumentation. All corresponding requests/tokens/content matched. The comparator passed both preregistered gates:
+
+| Prompt | Retained ingest | Candidate ingest | Ingest change | Retained output | Candidate output | Output change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 428.152 | 436.383 | +1.923% | 35.153 | 36.860 | +4.855% |
+| 4096 | 509.557 | 514.644 | +0.998% | 33.071 | 34.637 | +4.735% |
+
+Evidence: cuda-service-gdn-indexed-state-{control,candidate}-a.jsonl, their separate conditioning files and comparison-a.json. This is promising but not yet an accepted third win. The reverse pair uses fresh candidate19024 followed by fresh retained control, with identical conditioning/measurement. The earlier traced gather-share ceiling is approximate and from different conditions; do not attribute the full observed percentage to its kernel-time estimate.
+
+
+### 030 accepted: third validated optimization win
+
+The reverse pair passed unchanged gates: output+3.751%/+3.108% at512/4096, ingest+2.138%/-0.700%. Pooled ABBA has six measured samples per condition at each length, all exact request/token/content comparisons passing:
+
+| Prompt | Retained ingest | Candidate ingest | Ingest change | Retained output | Candidate output | Output change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 414.723 | 425.621 | +2.628% | 35.452 | 36.868 | +3.994% |
+| 4096 | 515.155 | 514.956 | -0.039% | 33.393 | 34.617 | +3.666% |
+
+Evidence: both comparison-b.json and comparison-abba.json, four measured artifacts and separate conditioning artifacts under cuda-service-gdn-indexed-state-*. Retain for repeatable output improvement with no material ingest regression; the512 ingest increase is observed, not a demonstrated prefill-kernel optimization. Independent final review passed the exact V3 diff, runtime hashes/counts, independently queried SQLite mechanism evidence, and all768 checked growth/atomic logprob values matching exactly. Its pending ABBA condition is now satisfied.
+
+After inspecting idle baseline18904, stopped it and deployed tools/llamacpp-cuda-gdn-indexed-state through the canonical helper. All11 stable-path hashes match cuda-gdn-indexed-state-binary-hashes.json. Restored the original supervisor byte-for-byte (SHA25654af3284fda7d5a446f5df8c7a82121444576fff96283d7eea21dbf7362142be) and restarted the normal scheduled service, healthy PID23780. Maintenance artifacts remain preserved. This candidate is the new rollback/performance baseline for032; old lazy-reserve snapshot remains available. Three validated wins total.

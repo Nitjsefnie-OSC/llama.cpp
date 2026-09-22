@@ -1217,6 +1217,12 @@ struct test_case {
 
     virtual bool run_whole_graph() { return false; }
     virtual std::vector<ggml_tensor *> fusion_test_nodes() { return {}; }
+
+    virtual bool compare_graph(ggml_backend_t backend1, ggml_backend_t backend2, ggml_cgraph * graph,
+            ggml_backend_eval_callback callback, void * user_data,
+            const ggml_tensor * const * test_nodes, size_t num_test_nodes) {
+        return ggml_backend_compare_graph_backend(backend1, backend2, graph, callback, user_data, test_nodes, num_test_nodes);
+    }
     virtual bool use_weight_context() { return false; }
 
     ggml_cgraph * gf = nullptr;
@@ -1490,7 +1496,7 @@ struct test_case {
         if (fused_nodes_to_verify.size() == 0 && run_whole_graph()) {
             fused_nodes_to_verify.push_back(out);
         }
-        const bool cmp_ok = ggml_backend_compare_graph_backend(backend1, backend2, gf, callback, &ud,
+        const bool cmp_ok = compare_graph(backend1, backend2, gf, callback, &ud,
                                                                run_whole_graph() ? fused_nodes_to_verify.data() : nullptr,
                                                                fused_nodes_to_verify.size());
 
@@ -4435,6 +4441,172 @@ struct test_gated_delta_net : public test_case {
                 ggml_backend_tensor_set(t, idx.data(), 0, idx.size()*sizeof(int32_t));
             } else {
                 init_tensor_uniform(t);
+            }
+        }
+    }
+};
+
+// Indexed K=1 reads with the normal GDN -> CPY cache-write fusion.
+struct test_gated_delta_net_indexed_cache : public test_gated_delta_net {
+    const int32_t first_row;
+    const int32_t write_row;
+    const bool shifted_write;
+    std::vector<ggml_tensor *> checked;
+
+    test_gated_delta_net_indexed_cache(int32_t first_row, int32_t write_row, bool raw, bool shifted_write = false)
+        : test_gated_delta_net(GGML_TYPE_F32, 16, 128, 1, 1, 3, false, false, 1, true, 4, raw),
+          first_row(first_row), write_row(write_row), shifted_write(shifted_write) {}
+
+    std::string op_desc(ggml_tensor *) override { return "GATED_DELTA_NET_INDEXED_CACHE"; }
+    std::string vars() override { return VARS_TO_STR4(first_row, write_row, raw_gates, shifted_write); }
+    bool run_whole_graph() override { return true; }
+    std::vector<ggml_tensor *> fusion_test_nodes() override { return checked; }
+
+    bool compare_graph(ggml_backend_t backend1, ggml_backend_t backend2, ggml_cgraph * graph,
+            ggml_backend_eval_callback callback, void * user_data,
+            const ggml_tensor * const * test_nodes, size_t num_test_nodes) override {
+        struct copy_guard {
+            struct ggml_backend_graph_copy copy;
+            ~copy_guard() { ggml_backend_graph_copy_free(copy); }
+        } reference { ggml_backend_graph_copy(backend2, graph) };
+        if (!reference.copy.buffer || !reference.copy.graph || num_test_nodes != 10) {
+            return false;
+        }
+
+        const std::array<ggml_cgraph *, 2> graphs = { graph, reference.copy.graph };
+        std::array<std::vector<ggml_tensor *>, 2> nodes;
+        std::array<ggml_tensor **, 2> node_arrays;
+        std::array<ggml_tensor *, 2> rows = {};
+        std::array<ggml_tensor *, 2> next_rows = {};
+        struct tensor_storage {
+            ggml_tensor * tensor;
+            void * data;
+            ggml_backend_buffer_t buffer;
+        };
+        std::vector<tensor_storage> storage;
+        for (size_t b = 0; b < graphs.size(); ++b) {
+            node_arrays[b] = ggml_graph_nodes(graphs[b]);
+            const int n = ggml_graph_n_nodes(graphs[b]);
+            nodes[b].assign(node_arrays[b], node_arrays[b] + n);
+            std::vector<ggml_tensor *> tensors = nodes[b];
+            for (size_t i = 0; i < tensors.size(); ++i) {
+                ggml_tensor * t = tensors[i];
+                storage.push_back({ t, t->data, t->buffer });
+                if (strcmp(t->name, "rows") == 0) { rows[b] = t; }
+                if (strcmp(t->name, "next_rows") == 0) { next_rows[b] = t; }
+                for (ggml_tensor * src : t->src) {
+                    if (src && std::find(tensors.begin(), tensors.end(), src) == tensors.end()) {
+                        tensors.push_back(src);
+                    }
+                }
+                if (t->view_src && std::find(tensors.begin(), tensors.end(), t->view_src) == tensors.end()) {
+                    tensors.push_back(t->view_src);
+                }
+            }
+            if (!rows[b] || !next_rows[b]) {
+                return false;
+            }
+        }
+        if (nodes[0].size() != nodes[1].size()) {
+            return false;
+        }
+        std::vector<int> selected;
+        for (size_t i = 0; i < nodes[0].size(); ++i) {
+            if (std::find(test_nodes, test_nodes + num_test_nodes, nodes[0][i]) != test_nodes + num_test_nodes) {
+                selected.push_back((int) i);
+            }
+        }
+        if (selected.size() != 10) {
+            return false;
+        }
+        const auto storage_unchanged = [&]() {
+            for (size_t b = 0; b < graphs.size(); ++b) {
+                if (ggml_graph_nodes(graphs[b]) != node_arrays[b] ||
+                    ggml_graph_n_nodes(graphs[b]) != (int) nodes[b].size() ||
+                    !std::equal(nodes[b].begin(), nodes[b].end(), ggml_graph_nodes(graphs[b]))) {
+                    return false;
+                }
+            }
+            for (const auto & entry : storage) {
+                if (entry.tensor->data != entry.data || entry.tensor->buffer != entry.buffer) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        // Keep graphs, allocations and accumulated cache state across direct/capture/replay calls.
+        for (int run = 0; run < 4; ++run) {
+            if (!storage_unchanged()) { return false; }
+            const int32_t first = run % 2 == 0 ? first_row : 4 - first_row;
+            const int32_t next = 4 - first;
+            for (size_t b = 0; b < graphs.size(); ++b) {
+                ggml_backend_tensor_set(rows[b], &first, 0, sizeof(first));
+                ggml_backend_tensor_set(next_rows[b], &next, 0, sizeof(next));
+            }
+            if (ggml_backend_graph_compute(backend1, graphs[0]) != GGML_STATUS_SUCCESS ||
+                ggml_backend_graph_compute(backend2, graphs[1]) != GGML_STATUS_SUCCESS || !storage_unchanged()) {
+                return false;
+            }
+            size_t visited = 0;
+            for (int i : selected) {
+                if (!callback(i, nodes[0][i], nodes[1][i], user_data)) { return false; }
+                ++visited;
+            }
+            if (visited != 10) { return false; }
+        }
+        return true;
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        checked.clear();
+        ggml_tensor * gdn = test_gated_delta_net::build_graph(ctx);
+        if (mode != MODE_TEST || gf == nullptr) {
+            // Perf builds its own graph later; only correctness runs the ordered cache-write sequence.
+            return gdn;
+        }
+        ggml_tensor * cache = gdn->src[5];
+        ggml_tensor * rows = gdn->src[6];
+        const int64_t D = 128*128*48;
+        const int64_t A = 128*48;
+        ggml_tensor * next_rows = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+        ggml_set_name(next_rows, "next_rows");
+
+        for (int step = 0; step < 2; ++step) {
+            if (step == 1) {
+                // Change the same device row buffer between calls, without a host row constant.
+                ggml_tensor * updated_rows = ggml_cpy(ctx, next_rows, rows);
+                ggml_build_forward_expand(gf, updated_rows);
+                ggml_tensor * previous = gdn;
+                gdn = ggml_gated_delta_net_rows(ctx, previous->src[0], previous->src[1], previous->src[2],
+                    previous->src[3], previous->src[4], cache, updated_rows, 1);
+                if (raw_gates) {
+                    ggml_gated_delta_net_set_raw_gates(gdn, previous->src[7], previous->src[8]);
+                }
+            }
+            ggml_tensor * tail = ggml_view_1d(ctx, gdn, D, A*sizeof(float));
+            ggml_tensor * target = ggml_view_2d(ctx, cache, D, 1, D*sizeof(float), (write_row*D + shifted_write)*sizeof(float));
+            ggml_build_forward_expand(gf, ggml_cpy(ctx, tail, target));
+
+            ggml_tensor * attention = ggml_cont(ctx, ggml_view_1d(ctx, gdn, A, 0));
+            ggml_build_forward_expand(gf, attention);
+            checked.push_back(attention);
+            // Check each cache row separately, including all untouched slot canaries.
+            for (int row = 0; row < 4; ++row) {
+                ggml_tensor * snapshot = ggml_cont(ctx, ggml_view_1d(ctx, cache, D, row*D*sizeof(float)));
+                ggml_build_forward_expand(gf, snapshot);
+                checked.push_back(snapshot);
+            }
+        }
+        return checked.back();
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        test_gated_delta_net::initialize_tensors(ctx);
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+            if (strcmp(t->name, "rows") == 0 || strcmp(t->name, "next_rows") == 0) {
+                const int32_t row = strcmp(t->name, "rows") == 0 ? first_row : 4 - first_row;
+                ggml_backend_tensor_set(t, &row, 0, sizeof(row));
             }
         }
     }
@@ -10259,6 +10431,22 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
 
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 1, 1));
+    for (bool raw : {false, true}) {
+        // Standalone output includes the final state; cache-fused cases verify both decode steps.
+        test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 128, 1, 1, 3, false, false, 1, true, 4, raw));
+        for (int32_t read_row : {1, 3}) {
+            for (int32_t write_row : {read_row, 2}) {
+                test_cases.emplace_back(new test_gated_delta_net_indexed_cache(read_row, write_row, raw));
+            }
+        }
+        // A partially overlapping output must fall back to GDN then CPY.
+        test_cases.emplace_back(new test_gated_delta_net_indexed_cache(1, 1, raw, true));
+    }
+    // CUDA must reject indexed prefill, multiple sequences, rollback, and vector gates.
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 128, 2, 1, 3, false, false, 1, true));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 128, 1, 2, 3, false, false, 1, true));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 128, 1, 1, 3, false, false, 2, true));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 128, 1, 1, 3, false, true,  1, true));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 16, 1, 1));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 16, 1, 1, 1, true, true));
     // raw gates (sigmoid / softplus folded into the op): decode, prefill, rows mode
