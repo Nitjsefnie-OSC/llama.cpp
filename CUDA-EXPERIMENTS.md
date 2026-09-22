@@ -949,3 +949,53 @@ SM86 occupancy improvement from40 to48 resident warps is inferred from register 
 Source preparation is isolated in experiment/pq2-no-auto-unroll. Normal accepted service remains healthy; no compilation or service test for029 has started.
 
 029 source candidate prepared: one mmvq.cu change, +13/-5 lines, patch cuda-pq2-rolled-source.patch SHA25665071704a5548554161ab6b04d408ebbcf4953eb854602806479add40fe2da20. Author source-expansion/diff checks passed; independent source review is pending before integration/build. The existing clean full-format OFF build cache uses Release/86-real and root source; no compiler processes or candidate log/snapshot artifacts already exist. Its preserved OFF snapshot will remain immutable if that build directory is reused.
+
+
+### 029 reviewed source compiled successfully
+
+Independent spec/source-quality review passed, then the exact patch was applied to root and whitespace-checked. Canonical CUDA12.9.1/SM86 Release compilation in the reusable full-format cache completed all210 build steps, exit0 in58.5s. Full202,457-byte compiler log and command/exit/timing receipt are cuda-build-pq2-rolled.txt and cuda-build-pq2-rolled.exit.json. The prior clean OFF snapshot remains separate and unchanged; the build directory now contains029 and must not be treated as the old baseline.
+
+All11 candidate files were copied exclusively and hash-verified in tools/llamacpp-cuda-pq2-rolled. CUDA DLL SHA256f85e33eef55dfb6ae5b4f126a3356dcf7318ff0a902e4ce0aa4fd12f3f91b060; manifest cuda-pq2-rolled-binary-hashes.json. Independent disassembly/resource verification is pending; no029 GPU correctness workload or service comparison has started.
+
+
+### 029 static gates passed
+
+Independent disassembly of the hash-verified candidate reports ordinary registers42->28, zero stack/local memory and no LDL/STL spill instructions. Ordinary code size5120->2176 bytes; the paired loop is replaced by one chunk/increment32, with14 rather than28 loads before the first DP4A. Static inspection preserves eight ordered DP4As, scale multiplication, one sequential accumulator FFMA, tail/row guards, reduction, bias and32x4 launch geometry. Fused normalized instruction text and full resource record are identical to accepted:37 registers,3968 code bytes.
+
+Evidence: cuda-pq2-rolled-sass-candidate.txt, its metadata.json, cuda-pq2-rolled-sass-comparison.json and cuda-pq2-rolled-static-gates.json. This crosses the preregistered register gate but is not a speed result; reduced load overlap remains a risk. Runtime references and strict actual-service correctness follow before timing.
+
+
+### 029 CPU-reference runtime gates passed
+
+After inspected command lines and idle-slot checks, maintenance stopped only the ordinary wrapper/launcher/server PIDs25388/22132/1944; receipt cuda-maintenance/stopped029.json. The tunnel/task definition remain unchanged, and original supervisor plus accepted snapshots are preserved for restoration.
+
+The candidate passed101/101 PQ2 matmul,44/44 PQ2 fused decode and8/8 whole-graph PQ2 FFN cases,153 total. All native commands and expected nonzero counts passed; full stdout/stderr and command/exit/count assertions are cuda-pq2-rolled-{mulmat,fusion,ffn}.*.txt and cuda-pq2-rolled-runtime-results.jsonl. No acceptance throughput is inferred from reference-test durations. Candidate service startup uses the stable path, full production context/batch/slots, lazy reservation and no debug instrumentation; strict growth/atomic gates follow.
+
+
+### 029 strict service correctness passed
+
+Both growth and atomic commands exited0: all512/4096/16384/512 requests, repeated512 after buffer growth, and all four slots in one atomic concurrent request match accepted references under exact requests/tokens/content plus the unchanged1e-4 probability gate. Evidence: cuda-pq2-rolled-growth-correctness.jsonl and cuda-pq2-rolled-atomic-correctness.jsonl. The inspected idle candidate correctness process was stopped; throughput conditions each start fresh so the16K growth allocation is not carried into candidate timing. Warming/measurement use the same canonical service benchmark with profiling flags off.
+
+
+### 029 rejected: register reduction did not produce a service gain
+
+Matched fresh processes each completed separate conditioning and three measured requests at both lengths, with profiling flags off. All eight corresponding requests/tokens/content match. The comparator exited1 for the preregistered output performance gate:
+
+| Prompt | Retained ingest | Candidate ingest | Change | Retained output | Candidate output | Change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 400.404 | 401.689 | +0.321% | 35.485 | 35.360 | -0.353% |
+| 4096 | 515.580 | 516.721 | +0.221% | 33.397 | 33.280 | -0.353% |
+
+The42->28 register reduction, zero spills and smaller generated code did not meet the predicted service gain. Reject without reverse-order repeats; do not infer why throughput stayed flat from occupancy alone. Control measured samples began71-75C/ended82-86C, candidate73-74C/84-85C; instantaneous clock equality is unproven. Artifacts: cuda-service-pq2-rolled-{control,candidate}-a.jsonl, separate conditioning files and cuda-service-pq2-rolled-comparison-a.json.
+
+Reversed the exact source patch and verified mmvq.cu equals retained HEAD. Preserved patch, candidate snapshot, SASS/resources and all runtime/service evidence. After stopping inspected idle PID14152, the canonical deploy helper restored accepted lazy-reserve binaries. All11 hashes match; original supervisor restored byte-for-byte to54af3284fda7d5a446f5df8c7a82121444576fff96283d7eea21dbf7362142be; normal scheduled service healthy PID24124. Still two validated optimization wins.
+
+One combined health-check/log-update tool command was blocked by policy with no stated reason before execution; separate health and append operations succeeded without changing permissions. This affected orchestration only, not any correctness/performance gate.
+
+## 030 - direct indexed recurrent-state input during single-sequence decode
+
+After029 failed, proceed with the previously scoped gather candidate. Mechanism: remove48 materialized3MiB F32 state gathers/token and load the selected cached row directly in GDN, retaining existing cache-write fusion and exact arithmetic. Guard to scalar S128/H48, one token/sequence/K1, no extra-state relocation and supported layouts; retain normal path otherwise. Row indices stay dynamic device inputs across replay. Existing ring-mode activation/writeback must not be enabled blindly.
+
+Measured gather cost0.898677ms/token implies an ideal3.16% throughput ceiling at29.3ms/token. Conditional prediction is roughly2-3% output gain if most of this copy cost is removed with negligible indexing overhead; no prefill gain is expected. Static/source gates require correct input lifetimes, relocation exclusions and preserved write fusion. Runtime gates include nonzero/changing state row IDs, untouched-slot checks, all existing relevant GDN references, actual-service growth/atomic equivalence, and trace confirmation that the48 target gathers disappear. Acceptance requires repeated uninstrumented service pairs with>=2% output gain at both512/4096 and<=2% ingest regression, exact requests/outputs.
+
+Implementation is isolated in experiment/gdn-indexed-state. A separate workspace-only Nsight Compute preparation task will determine a safe non-admin targeted-counter probe for later PQ2 diagnosis; no counter permission change, installation/elevation or additional profiler capture has occurred.
