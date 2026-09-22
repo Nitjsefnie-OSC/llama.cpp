@@ -542,3 +542,12 @@ Starting lazy-reservation-enabled service with graph lifecycle logging for funct
 `cuda-lazy-reserve-growth-enabled-a.jsonl` exited 1. All eight exact requests and generated-token sequences match the retained reference; all four sequential growth cases and concurrent slots 0/1 also pass the strict probability comparison. Concurrent slots 2/3 differ at first-token log probability: -0.04377519 vs -0.03808111, and -0.04053763 vs -0.04424564 (absolute tolerance 1e-4). Do not relax this gate without control evidence. Next compare concurrent reference repeats to distinguish schedule-dependent baseline variation from allocation effects.
 
 Replay diagnostics parsed successfully: 128 executions with 52 decode replays and 12 prefill replays; six captures, three instantiations, six updates, two evictions. Source: `cuda-service-lazy-reserve-graph-a.log` and its summary. A post-start GPU snapshot showed 775 MiB free vs the earlier retained-run 59 MiB snapshot; these are separate observations, not a controlled residency measurement or throughput gain.
+
+
+### 023 same-binary disabled control A
+
+`cuda-service-lazy-reserve-off-a.jsonl` (PID596, monitor40067) completed exit0 with eight exact request/token matches against retained control D. LLAMA_LAZY_COMPUTE_RESERVE=0, both diagnostics off. Medians: 512 ingest307.688/output31.354 tok/s, wall9.8079s; 4096 ingest359.740/output30.350, wall19.7915s. These are a fresh control under current conditions, not a claimed improvement.
+
+Independent analysis confirmed baseline concurrent admission order0,1,3 then2; enabled order0,1,2 then3. Only slots2/3 probability comparisons failed, while all sequential cases and slots0/1 had bit-identical full probability records. Baseline identical concurrent prompts already vary across slots by up to0.02662753 chosen-token log probability. This establishes a scheduling confound, not candidate acceptance. Native multi-prompt /completion queues all four tasks under one mutex before slot updates; a controlled atomic four-prompt check will retain the1e-4 gate.
+
+The reviewed concurrent-only checker extension passed16mocktests and preserves full-suite behavior, full request/response audit, and four/eight-case reference validation.

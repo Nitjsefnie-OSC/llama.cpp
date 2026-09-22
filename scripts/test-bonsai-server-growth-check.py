@@ -76,7 +76,7 @@ class GrowthTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name)
         self.args = Namespace(url="http://mock", output=self.path/"baseline.jsonl", reference=None,
-                              tokens=2, timeout=2, logprob_atol=1e-4)
+                              tokens=2, timeout=2, logprob_atol=1e-4, concurrent_only=False)
 
     def rows(self):
         return [json.loads(line) for line in self.args.output.read_text().splitlines()]
@@ -110,6 +110,67 @@ class GrowthTests(unittest.TestCase):
         rows = self.rows()
         self.assertEqual(rows[-1]["status"], "failed")
         self.assertEqual(len([row for row in rows if row["kind"] == "result"]), 1)
+
+    def test_concurrent_only_accepts_full_and_four_case_references(self):
+        GROWTH.run(self.args, MockService())
+        self.args.reference = self.args.output
+        self.args.concurrent_only = True
+        for filename in ("four-from-full.jsonl", "four-from-four.jsonl"):
+            self.args.output = self.path/filename
+            service = MockService()
+            GROWTH.run(self.args, service)
+            self.assertEqual(len(service.completions), 4)
+            self.assertEqual({len(body["prompt"]) for body in service.completions}, {128})
+            self.assertEqual(service.max_active, 4)
+            rows = self.rows()
+            self.assertEqual(rows[-1]["cases"], 4)
+            self.assertEqual(rows[-1]["mode"], "concurrent-only")
+            self.assertTrue(rows[-1]["compared"])
+            self.assertEqual(next(row for row in rows if row["kind"] == "metadata")["mode"], "concurrent-only")
+            self.assertEqual(len([row for row in rows if row["kind"] == "result"]), 4)
+            self.args.reference = self.args.output
+        self.args.concurrent_only = False
+        self.args.output = self.path/"full-from-four.jsonl"
+        service = MockService()
+        with self.assertRaisesRegex(ValueError, "result count"):
+            GROWTH.run(self.args, service)
+        self.assertFalse(service.completions)
+        self.assertFalse(self.args.output.exists())
+
+    def test_concurrent_only_retains_all_mismatched_responses(self):
+        self.args.concurrent_only = True
+        GROWTH.run(self.args, MockService())
+        self.args.reference = self.args.output
+        self.args.output = self.path/"four-mismatch.jsonl"
+        with self.assertRaisesRegex(ValueError, "Concurrent cases failed"):
+            GROWTH.run(self.args, MockService(probability_delta=0.001))
+        rows = self.rows()
+        self.assertEqual(len([row for row in rows if row["kind"] == "result"]), 4)
+        self.assertEqual(len([row for row in rows if row["kind"] == "error"]), 4)
+        self.assertEqual(rows[-1]["status"], "failed")
+        self.assertEqual(rows[-1]["mode"], "concurrent-only")
+
+    def test_concurrent_reference_requires_exact_selected_cases(self):
+        self.args.concurrent_only = True
+        GROWTH.run(self.args, MockService())
+        rows = self.rows()
+        next(row for row in rows if row["kind"] == "result")["case"] = "unexpected-slot"
+        reference = self.path/"bad-reference.jsonl"
+        reference.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        self.args.reference = reference
+        self.args.output = self.path/"bad-reference-run.jsonl"
+        service = MockService()
+        with self.assertRaisesRegex(ValueError, "case names differ"):
+            GROWTH.run(self.args, service)
+        self.assertFalse(service.completions)
+
+    def test_partial_full_reference_is_not_a_four_case_reference(self):
+        GROWTH.run(self.args, MockService())
+        rows = [row for row in self.rows() if row["kind"] != "result" or row["case"].startswith("concurrent-")]
+        reference = self.path/"partial-full.jsonl"
+        reference.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        with self.assertRaisesRegex(ValueError, "summary/result count"):
+            GROWTH.load_reference(reference, concurrent_only=True)
 
     def test_busy_and_existing_output_never_launch(self):
         service = MockService(busy=True)

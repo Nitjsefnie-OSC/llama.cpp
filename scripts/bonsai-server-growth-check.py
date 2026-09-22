@@ -104,7 +104,7 @@ def compare_response(body, response, reference, atol):
                     f"Logprob differs at token {index}, id={got['id']}: {got['logprob']} vs {ref['logprob']}")
 
 
-def load_reference(path):
+def load_reference(path, concurrent_only=False):
     with path.open(encoding="utf-8") as source:
         rows = [json.loads(line) for line in source]
     require(rows and rows[-1].get("kind") == "summary" and rows[-1].get("status") == "passed",
@@ -112,16 +112,23 @@ def load_reference(path):
     require(not any(row.get("kind") == "error" for row in rows), "Reference contains errors")
     metadata = [row for row in rows if row.get("kind") == "metadata"]
     results = [row for row in rows if row.get("kind") == "result"]
-    require(len(metadata) == 1 and len(results) == 8, "Reference requires metadata and eight results")
+    allowed_counts = (4, 8) if concurrent_only else (8,)
+    require(len(metadata) == 1 and len(results) in allowed_counts,
+            f"Reference requires metadata and result count in {allowed_counts}")
+    require(rows[-1].get("cases") == len(results), "Reference summary/result count differs")
+    expected_mode = "concurrent-only" if len(results) == 4 else "full"
+    require(all(row.get("mode", expected_mode) == expected_mode for row in (metadata[0], rows[-1])),
+            "Reference mode/result count differs")
     by_name = {row["case"]: row for row in results}
-    require(len(by_name) == 8, "Duplicate reference cases")
+    require(len(by_name) == len(results), "Duplicate reference cases")
     for row in results:
         validate_response(row["request"], row["response"])
     return metadata[0], by_name
 
 
 def run(args, request=request_json):
-    reference = load_reference(args.reference) if args.reference else None
+    reference = load_reference(args.reference, args.concurrent_only) if args.reference else None
+    mode = "concurrent-only" if args.concurrent_only else "full"
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as output:
         lock = threading.Lock()
@@ -155,12 +162,13 @@ def run(args, request=request_json):
 
         try:
             record({"kind": "start", "url": args.url, "reference": str(args.reference) if args.reference else None,
+                    "mode": mode,
                     "logprob_atol": args.logprob_atol, "probability_tolerance": "absolute natural-log units; relative tolerance zero"})
             slots = call("/slots")
             record({"kind": "slots", "stage": "start", "response": slots})
             idle_slots(slots)
             props = call("/props")
-            record({"kind": "metadata", "props": props, "slots": slots})
+            record({"kind": "metadata", "mode": mode, "props": props, "slots": slots})
             require(props["total_slots"] == 4 and props["default_generation_settings"]["n_ctx"] == 188416,
                     "Expected unchanged context 188416 and four slots")
             if reference:
@@ -172,9 +180,11 @@ def run(args, request=request_json):
             tokenize_body = {"content": CORPUS * (max(SIZES) // 8 + 1)}
             tokenized = call("/tokenize", tokenize_body)
             cases = make_cases(tokenized["tokens"], args.tokens)
+            selected_cases = cases[4:] if args.concurrent_only else cases
             if reference:
-                require(set(reference[1]) == {name for name, _ in cases}, "Reference case names differ")
-                for name, body in cases:
+                reference_cases = cases if len(reference[1]) == 8 else cases[4:]
+                require(set(reference[1]) == {name for name, _ in reference_cases}, "Reference case names differ")
+                for name, body in selected_cases:
                     require(body == reference[1][name]["request"], f"Reference request differs: {name}")
 
             def exercise(name, body, barrier=None):
@@ -192,7 +202,7 @@ def run(args, request=request_json):
                     raise
 
             first_result = None
-            for index, (name, body) in enumerate(cases[:4]):
+            for index, (name, body) in enumerate([] if args.concurrent_only else cases[:4]):
                 idle_slots(call("/slots"))
                 print(f"Checking {name}", flush=True)
                 result = exercise(name, body)
@@ -213,10 +223,11 @@ def run(args, request=request_json):
                     except Exception as error:
                         errors.append(str(error))
             require(not errors, f"Concurrent cases failed: {errors}")
-            record({"kind": "summary", "status": "passed", "cases": len(cases), "compared": reference is not None})
-            print("PASS growth and four-slot correctness checks", flush=True)
+            record({"kind": "summary", "status": "passed", "mode": mode,
+                    "cases": len(selected_cases), "compared": reference is not None})
+            print(f"PASS {mode} correctness checks", flush=True)
         except Exception as error:
-            record({"kind": "summary", "status": "failed", "error": str(error)})
+            record({"kind": "summary", "status": "failed", "mode": mode, "error": str(error)})
             raise
 
 
@@ -225,6 +236,8 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:8090")
     parser.add_argument("--output", required=True, type=Path, help="exclusive new JSONL artifact")
     parser.add_argument("--reference", type=Path, help="completed passing artifact to compare")
+    parser.add_argument("--concurrent-only", action="store_true",
+                        help="run only slots 0..3 concurrently; accepts a passing four- or eight-case reference")
     parser.add_argument("--tokens", type=int, default=16)
     parser.add_argument("--timeout", type=float, default=600, help="finite HTTP socket/barrier timeout in seconds")
     parser.add_argument("--logprob-atol", type=float, default=LOGPROB_ATOL,
