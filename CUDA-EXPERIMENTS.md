@@ -1017,3 +1017,35 @@ After that error, the inspected idle diagnostic server was intentionally stopped
 Seven-file candidate (+199/-27) preserved at cuda-gdn-indexed-state-source.patch, SHA256a8e53ec88f24fff31ab2acec95afb3454c5b417e7ba48401a78a548021ef02ae. It adds a narrow dynamic cached-row input to CUDA GDN after PDL synchronization while retaining K1 CPY graph output; ring behavior and the GGML_GDN_STATE_GATHER fallback remain. Author also guards partial/non-row-aligned cache overlap from write fusion. Patch application check against retained root passed; root code is still unchanged pending independent review.
 
 Prepared focused selector GATED_DELTA_NET_INDEXED_CACHE expects10 whole-graph cases covering nonzero/different rows, in-place/cross-slot writes, changing device index inputs and untouched-slot canaries/partial-overlap fallback. Existing GDN selector gains two supported indexed and four unsupported-shape cases. These are source preparations, not executed tests. Review specifically checks index lifetime, alias/order hazards, guard coverage and whether the tests genuinely preserve intended fusion. Real CUDA graph replay across service slots remains a required runtime gate.
+
+
+### 030 independent review: production pass, test-construction fix required
+
+Review found a concrete source-level test bug: indexed-cache build_graph unconditionally expanded member gf, which is null when eval_perf constructs cases before allocating its own graph. This could crash performance enumeration even for unrelated selectors. No crash was executed; the construction call chain establishes the defect. Author is restricting ordered multi-node graph expansion to correctness mode with a valid member graph, following retained PQ2_STAGED_FFN practice. A native perf/NO_MATCH construction smoke is required after build.
+
+Production/alias review passed within the served scope: all changed builder callers and four CUDA launches checked; explicit cache/index dependencies survive, row reads follow PDL synchronization, relocation guard is present, whole-row alias stores are column-disjoint, and shifted overlap disables write fusion. Ten prepared cases structurally cover eight eligible write-fusion and two partial-overlap fallback graphs. Compiled behavior and positive fusion evidence remain pending.
+
+Review also identified a coverage gap: two indexed GDN nodes in one compute do not prove cache replay across repeated computes. Acceptance now explicitly requires the same graph/tensor pointers across at least three computes, changing device row-index contents, checking output/state/all-slot canaries against CPU at each step, and positive evidence that CUDA graph replay occurred. Existing service growth/atomic checks are retained but do not substitute for this gate.
+
+
+### 030 V2 source review/build passed; replay harness being completed
+
+Independent review confirmed the early mode/member-graph guard closes the construction defect; production sections are byte-identical to V1. V2 patch SHA256308f6bfcaf6d9ff0eb53799b3042d50173680290119eda9beb802db39b74eec1 was applied after its clean check. Canonical CUDA12.9.1/SM86 Release build completed exit0; full compiler log/command/exit/timing are cuda-build-gdn-indexed-state-v2.txt and .exit.json. The deployed ordinary service remains on accepted binaries.
+
+The replay test is being added through a narrow virtual comparison hook whose default preserves the existing helper. Only indexed-cache tests override it, using one persistent CPU graph copy and four computes with unchanged graph/node/data/buffer addresses, changing existing row tensors before each compute and comparing all ten attention/cache snapshots after each. One exact case will run in a fresh process for unambiguous direct/capture/replay/replay logging; allocator/key reuse across the ten-case suite could otherwise inherit history. No new runtime test has run yet.
+
+
+### 030 V3 repeated-graph test review passed
+
+Independent spec/quality review passed the V3 test delta; production patch sections are byte-identical to V2. V3 SHA256f715994a1e20de2c1f3021c06264c091a1b872eba862d1bb062691a354e144f8. Applied only the reviewed test delta, preserving its own patch for rollback. The test uses one persistent CPU graph copy, four computes with device indices1/3 alternating, accumulated cache contents, unchanged graph/node/data/buffer addresses and all ten snapshots compared after every compute. Expected runtime counts are10/10 indexed-cache cases and49 executed GDN cases with14 unsupported exclusions. The exact single-case graph-stats run must prove direct/capture/replay/replay. These remain pending runtime gates.
+
+Trace proof is also preregistered: actual-service decode should replace48 ordinary GDNs with48 indexed GDNs, remove all48 target3MiB float gathers and reduce1983 to1935 kernels/replay if other work is unchanged. Contiguous write fusion is checked through D2D copy size/order/correlation, not kernel names: eight eligible focused cases retain eight3MiB snapshot copies per compute; two shifted-overlap controls retain ten including the two unfused state writes. Expected totals across four computes per case are80 indexed GDNs and3363MiB D2D copies. Reference and trace gates precede uninstrumented throughput acceptance.
+
+
+### 030 V3 build and maintenance preparation
+
+The test-only canonical rebuild passed both steps, exit0 in7.8s; cuda-build-gdn-indexed-state-v3.txt and .exit.json preserve full output and command. All11 candidate service files were copied exclusively into tools/llamacpp-cuda-gdn-indexed-state and hash-verified; manifest cuda-gdn-indexed-state-binary-hashes.json, CUDA SHA256a81640f1579b2d8a862747958c021f3505bc7e12b4bebd31466283a3aeb9ccc4.
+
+Inspected ordinary wrapper/launcher/server1696/17132/7636 and all four idle slots, then stopped only those processes for the authorized030 runtime interval; inspection030.json and stopped030.json preserve evidence. The maintenance supervisor prefix holds restarts, with byte-exact original and accepted snapshot retained for restoration. No candidate runtime result is claimed yet.
+
+Coverage clarification from runner preparation: perf builds make_test_cases_perf(), while the focused indexed-cache class is registered only in make_test_cases_eval(). Therefore perf/NO_MATCH is general construction smoke, not direct dynamic coverage of that class guard. The earlier review demonstrated the null-member hazard if constructed in perf mode, but did not establish that current perf registration reaches it. The guard remains defensive; focused correctness execution and fresh-process replay are the decisive runtime tests.
