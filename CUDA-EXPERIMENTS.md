@@ -386,3 +386,35 @@ Production service PID23724, profiling off, normal context188416 and q4 KV: cuda
 ### Experiment 019: shared activation permutations for fused PQ2 decode — preregistration
 
 Hypothesis from the actual-service decode profile: fused FFN up/gate projections can share the activation permutation needed by both integer dots. Instead of separately interleaving weight lookup results qe/qo into qx/qy for each matrix, form ue=byte_perm(u,v,0x6420) and uo=byte_perm(u,v,0x7531) once per eight activation values and dot both matrices against them. Expected source-level PRMT count falls8 to6 per group (8 fewer per32-value chunk), with unchanged weight traffic. Preserve16-bit loads for34-byte PQ2block alignment, allfour codes, each chunk scale expression andfloat accumulation order. Scope only retained SM86 fused PQ2 warp path. Gate: CPU-reference fused/unfused tests with nonzero counts, exact service output tokens, generated-resource review, and >=3% repeatable service decode gain without >2% ingest regression. No speed claim before measurement.
+
+### Experiment 020: prefill-only four-column GDN — preregistration
+
+Experiment017 improves ingestion but has not passed its decode gate. Test a narrower specialization: scalar S128 SM86 uses four columns per warp only when n_tokens>=32, retaining the original one-column kernel for decode and short tails. Keep existing GB10 behavior and mathematical operation order. Gate: full GATED_DELTA_NET reference suite, exact service token agreement, repeatable >=5% ingest improvement and no >2% decode regression. This is a new candidate, not a retroactive change to017 acceptance criteria.
+
+### Experiment 017: long-context service result
+
+At16,384 prompt /128generated tokens, two measured runs after warmup: median ingestion514.630 andoutput26.659 tok/s, wall36.6213s (cuda-service-gdn-cols4-16k.jsonl). Requests and generated tokens match the unmodifiedlocalbuild3/3. That older localbaseline measured462.270/24.858 and40.5611s; older retainedwarp-scale long trial was anomalously slow at368.484/26.595. These are historical comparisons across restarts, so a fresh retainedbaseline16K reversal is required next. No retention claim from the anomalous denominator.
+
+### Service deployment observation during017 reversal
+
+The first attempt to deploy the retained baseline immediately after stopping PID23724 was correctly refused because CIM still listed the terminating llama-server.exe with an unavailable path. No files were replaced by that failed attempt. After confirming zero llama-server processes, one new deployment succeeded; retainedbaseline is healthy as PID19364. Future stop sequences will wait on the already-inspected Process handle to finish before deploying. This was a lifecycle race, not a CUDA test failure.
+
+### Experiment 017: fresh16K baseline reversal
+
+Retainedwarp-scale production PID19364, same16K/128output requests, profilingoff: median489.621ingest/27.334output tok/s, wall38.1164s (cuda-service-warp-scale-stablepath-16k-c.jsonl). Candidate017 was514.630/26.659 and36.6213s: +5.1%ingest, -2.5%output, -3.9%totalwall. All3generatedsequencesmatch. Thus ingest improvement survives a fresh long-context control, but output still breaches the no>2%regressiongate. Original017 is not retained; experiment020 explicitly restores original decode geometry.
+
+### Experiment018 tooling verification; experiment019 prepared
+
+Affinity benchmark controls committed8eba03dd (reviewed original5d7dc366),27mocktests pass both independently andafterintegration; no blockingreviewfindings for this one-group24logicalCPUhost. Multi-group Windows machines remainunsupportedbythisexperiment; zeroaffinitymasksalone do not detect allmulti-groupdefaults. Affinity A-B-B-A now starts on unchangedPID19364/retainedwarp-scale binary. No builds orGPUtestjobs run during these measurements. Original017 sourceandaddedGDNcases reversed exactly againsttheirpreservedpatch. Independentlyreviewed019pairedPQ2patch applied to mainworkingtree for a later build, with originalGDNsource; no experimentalCUDAcode retainedorcommitted yet.
+
+### Experiment018 result — P-core affinity rejected
+
+Completed A-B-B-A on unchangedPID19364/retainedkernelbinary, no concurrentbuildsorGPUtests. Artifacts cuda-service-affinity-{a1,b1,b2,a2}.jsonl. All24 pairedcandidate/controlrequestsandgeneratedtokensequencesmatch. Pooledsixmeasuredsamplespercondition: pp512 A415.298/B416.680 (+0.33%), output A35.831/B35.816 (-0.04%); pp4096 A517.241/B514.641 (-0.50%), output A33.636/B33.686 (+0.15%). No repeatable3%benefit; rejectP-core-onlyaffinity. Both B legs verifiedrestorationto0xFFFFFF; independentPowerShellreadback=16777215. Same-processdata do not support hybrid-coreaffinity as a meaningful causeofobservedvariation. No permanentaffinity/power/prioritychange.
+
+### Experiment019 build and independent source review
+
+PairedPQ2helper andfusedcaller independentlyreviewed; all65,536packed16-bitwords checked againstCPUdecoding/existingLUT, preservingallfourcoefficients. Integerregroupingfitsint32(maximum8192magnitude), andchunkscale/floataccumulationorderunchanged. SourceonlyscopeSM86fusedPQ2CUDA; unfused/HIP/MUSAunchanged. Build started after018completed, logcuda-build-fused-pq2-permute.txt. FullreferenceGPUtests andactualserviceacceptance remain pending.
+
+### Experiment020 independent source review
+
+Prefill-onlyGDNpatchreviewpassed: COLSspecializationandhostgridagree; scalarS128SM86 selectsCOLS4onlyT>=32,GB10retainsoriginalCOLS4,otherpathsCOLS1. Arithmetic/state/snapshotbodyunchanged. T31/32/33anddecodereferencevalidationremainrequiredwhenbuilt. Patchpreservedascuda-gdn-cols4-prefill-source.patch; notyetappliedtomainwhile019isisolated.
