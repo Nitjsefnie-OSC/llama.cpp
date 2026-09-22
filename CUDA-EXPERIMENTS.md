@@ -418,3 +418,46 @@ PairedPQ2helper andfusedcaller independentlyreviewed; all65,536packed16-bitwords
 ### Experiment020 independent source review
 
 Prefill-onlyGDNpatchreviewpassed: COLSspecializationandhostgridagree; scalarS128SM86 selectsCOLS4onlyT>=32,GB10retainsoriginalCOLS4,otherpathsCOLS1. Arithmetic/state/snapshotbodyunchanged. T31/32/33anddecodereferencevalidationremainrequiredwhenbuilt. Patchpreservedascuda-gdn-cols4-prefill-source.patch; notyetappliedtomainwhile019isisolated.
+
+### Experiment 019: baseline generated instructions
+
+The first SASS extraction failed because cuobjdump needs the separate nvdisasm executable. That failure is preserved in `cuda-sass-pq2-fused-baseline.txt`. After installing only the SHA256-verified NVIDIA 12.9.1 nvdisasm component, extraction succeeded in `cuda-sass-pq2-fused-baseline-complete.txt`.
+
+The fused baseline kernel uses 37 registers and no local memory or stack. Its loop at 0x150 through 0x9e0 processes 32 activations per lane for both matrices, with four unrolled groups. Each iteration contains 138 static instructions, 36 PRMTs and 16 IDP.4A instructions. PRMTs comprise 16 lookup operations, 16 interleaves and four compiler-generated sign extensions. Thus the source-level estimate of eight permutations per group corresponds to nine actual baseline PRMTs. Candidate instruction counts and register pressure still need comparison after compilation.
+
+### Experiment 019: build and GPU correctness passed
+
+Build completed successfully (`cuda-build-fused-pq2-permute.txt`). CPU-reference comparisons passed 101/101 PQ2 MUL_MAT cases and 40/40 fused MUL_MAT_VEC_FUSION cases; both commands exited zero with nonzero test counts. Artifacts: `cuda-fused-pq2-permute-{mulmat,fusion}.{stdout,stderr}.txt`. The 14-file runtime snapshot `tools/llamacpp-cuda-fused-pq2-permute` matches build output hashes in `cuda-fused-pq2-permute-binary-hashes.json`. The inspected idle control process was stopped and its handle reached terminal state before deployment. Service measurements follow with original production flags and full CPU affinity.
+
+### Experiment 019: generated-code reduction confirmed
+
+Offline SASS comparison confirms the intended reduction per 32-activation fused loop: PRMT 36 -> 28; IDP.4A remains 16; total static instructions 138 -> 128. Registers remain 37 per thread, with zero local memory and stack. Calculated SM86 residency remains 12 blocks / 48 warps / 100%; this is theoretical occupancy, not utilization. Logs: `cuda-sass-pq2-fused-permute.txt` and `cuda-resource-fused-pq2-permute-sm86.txt`, both successful with empty stderr. Actual-service throughput is still the acceptance gate.
+
+### Experiment 021: CUDA graph cache diagnostics — preregistration
+
+Hypothesis, currently low confidence: graph cache eviction or property resets contribute to variation between otherwise identical service runs. `common.cuh` sweeps every five seconds and removes graph entries idle for at least ten seconds. Backend graph properties must match for two calls before capture/replay; property changes reset warmup. The existing llama-context "graphs reused" metric counts topology reuse before backend execution, so it cannot establish CUDA replay.
+
+Some slow 4K prefill phases took 10.71–10.77 seconds versus 7.75–7.90 in fast runs. Crossing the cache TTL may affect subsequent decode, but could be a consequence of slower prefill. Neither this observation nor nonzero shared GPU allocation proves the cause of the ingest gap.
+
+Add `DEBUG_CUDA_GRAPH_STATS=1`, inert otherwise, with cache identity, misses/evictions and idle age, property/warmup reset reasons, direct/capture/replay decisions, host lifecycle durations, and token width from quantized matrix projections. Keep CUDA replay enabled; add no CUDA events or synchronization. Matching decisions and negligible lifecycle costs in fast/slow runs would reject this hypothesis. Implement separately from performance candidates; use normal profiling-off service trials for speed acceptance.
+
+### Experiment 019: first service trial fails the speed gate
+
+Production PID 25044, full affinity, original flags, profiling off. `cuda-service-fused-pq2-permute-a.jsonl` measured:
+
+| Prompt | Ingest tok/s | Output tok/s | Total seconds |
+|---|---:|---:|---:|
+| 512 | 392.881 | 34.512 | 8.7062 |
+| 4096 | 516.971 | 32.425 | 15.7909 |
+
+The nearest full-affinity control was 430.144/35.827 at 512 and 516.909/33.639 at 4096. All eight requests and generated token sequences match. There is no demonstrated gain; fewer compiled instructions alone are insufficient. The third measured round recovered to 35.45/33.84 output tok/s, so one repeat on this same PID will check whether early versus later measurements account for the difference. The original acceptance threshold remains unchanged.
+
+### Experiment 019: repeat rejected; source reverted
+
+The same-process repeat (`cuda-service-fused-pq2-permute-b.jsonl`) completed successfully with eight matching requests and token sequences. Medians: 512-token ingest 403.722 / output 34.322 tok/s; 4096-token ingest 514.185 / output 32.056 tok/s. This again fails the >=3% output improvement gate despite lower compiled instruction count. The paired-dot patch was reversed exactly against its preserved source patch; neither its CUDA code nor its binary is accepted for permanent deployment.
+
+Operational correction: the benchmark file completed around 19:04 on September 22. At 20:46, process inspection showed only the service wrapper and server still running; the benchmark exit status was zero. Earlier chat updates incorrectly called the benchmark still running. The wrapper was keeping the idle server alive. No throughput samples were collected during that idle interval.
+
+### Experiment 020 / 021: next build prepared
+
+Applied the independently reviewed prefill-only four-column GDN patch and its eight reference test cases. Also applied the reviewed graph diagnostics and runner support; both diagnostic flags stay off for throughput acceptance. Graph diagnostics source review found no added CUDA API calls, events or synchronization and no changed graph decisions. Runner validation passed 23 mock cases across PowerShell 5.1 and 7.6, including restoration and conflicting log-mode checks. The next build excludes rejected experiment 019.
