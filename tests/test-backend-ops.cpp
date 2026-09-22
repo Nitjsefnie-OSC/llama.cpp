@@ -10302,6 +10302,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // Bonsai-2 PQ2_0 prefill at the served model's projection shapes.
+    for (int64_t n : {32, 128, 512}) {
+        for (const auto & shape : {std::array<int64_t, 2>{17408, 5120}, {5120, 17408},
+                                  {10240, 5120}, {6144, 5120}, {5120, 6144}}) {
+            test_cases.emplace_back(new test_mul_mat(GGML_TYPE_PQ2_0, GGML_TYPE_F32,
+                                                     shape[0], n, shape[1], {1, 1}, {1, 1}));
+        }
+    }
+
     // SWIGLU at a 27B-class FFN width, fused [gate|up] vs split operands
     // note: same bytes either way, so a backend that indexes them differently shows it here
     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
