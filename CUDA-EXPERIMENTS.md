@@ -1049,3 +1049,27 @@ The test-only canonical rebuild passed both steps, exit0 in7.8s; cuda-build-gdn-
 Inspected ordinary wrapper/launcher/server1696/17132/7636 and all four idle slots, then stopped only those processes for the authorized030 runtime interval; inspection030.json and stopped030.json preserve evidence. The maintenance supervisor prefix holds restarts, with byte-exact original and accepted snapshot retained for restoration. No candidate runtime result is claimed yet.
 
 Coverage clarification from runner preparation: perf builds make_test_cases_perf(), while the focused indexed-cache class is registered only in make_test_cases_eval(). Therefore perf/NO_MATCH is general construction smoke, not direct dynamic coverage of that class guard. The earlier review demonstrated the null-member hazard if constructed in perf mode, but did not establish that current perf registration reaches it. The guard remains defensive; focused correctness execution and fresh-process replay are the decisive runtime tests.
+
+
+### 030 native reference and graph-replay gates passed
+
+The exclusive runtime runner completed all four commands successfully: general perf/NO_MATCH construction smoke; 49/49 GDN references with 14 unsupported exclusions; 10/10 indexed-cache cases; and the exact raw-gate/in-place case in a fresh process. The focused class performs four computes per backend and ten output comparisons after each compute. Fresh-process graph statistics show one stable key/UID through direct(properties_changed), capture(warmup_complete), replay(stable), replay(stable), while device row inputs alternate1/3. DEBUG_CUDA_TIMING and GGML_CUDA_DISABLE_GRAPHS were absent. Full native outputs, commands, hashes, counts and graph events are cuda-gdn-indexed-state-runtime*. No test-duration speed claim is made.
+
+### 030 focused trace confirms preserved write fusion
+
+Nsight Systems profile completed exit0 in4.7s; cuda-nsys030-indexed-tests.nsys-rep plus full command/exit/outputs are preserved. Offline analysis passed the unchanged preregistered counts: 80 indexed GDN executions, 40 computes, eight eligible cases with eight state-sized D2D snapshot copies per compute and two shifted-overlap fallbacks with ten copies. Total336 copies of3MiB, with zero unassigned D2D. The compact spelling3363MiB in the earlier prediction means336 copies of3MiB, not a3363MiB transfer. Captured target stdout was recovered from SQLite and confirms10/10 tests passed.
+
+All30 graph executions have stable nonzero node identities within each case:15 nodes for eligible cases (four kernels/11 copies) and17 for fallback (four/13). Twenty-four CUPTI originalGraph/originalNode INVALID_PARAMETER lookup diagnostics remain unexplained; no missing execution record was identified by these checks. Three cudaGraphExecUpdate status910 events each immediately reinstantiate and launch successfully, matching the handled source fallback. This establishes execution-level fusion evidence within the trace coverage checked, not universal profiler completeness.
+
+The candidate actual-service512/32 capture also completed with launch/start/benchmark/stop evidence under cuda-nsys030-* and cuda-service-nsys030-decode.*; service analysis and strict context-growth/atomic checks are still pending.
+
+
+### 030 actual-service mechanism and correctness passed
+
+Offline service analysis passed all final30 measured replays:48 indexed GDN executions, zero target F32 state gathers, zero3MiB state writes and exactly1935 kernels/replay. After normalizing GDN template names, the inventory difference from028 is exactly48 removed gathers/token, with no other additions/removals. Evidence: cuda-nsys030-service-analysis.json, cuda-nsys030-service-vs028.json and full export/analysis receipts. Generic collection warning retained.
+
+The separate traced run does not show a speed win: summed kernel time29.160ms/token versus26.983 in028, with ordinary PQ2 increasing18.117 versus15.698ms while GDN stayed0.943 versus0.935ms. These runs do not provide a matched uninstrumented comparison; do not attribute the variation to the candidate or claim a gain from removed kernel counts alone.
+
+Strict actual-service growth512/4096/16384/512 and atomic four-slot checks both passed exact request/token/content and the unchanged probability tolerance. Artifacts: cuda-gdn-indexed-state-growth-correctness.jsonl and cuda-gdn-indexed-state-atomic-correctness.jsonl. Inspected idle diagnostic PID14644 was then stopped, ending the Nsight launch parent with4294967295/tool1 as expected for intentional target termination; capture start/benchmark/stop had already exited0. No profiler process remains.
+
+Restored all11 accepted snapshot hashes and started fresh uninstrumented baseline PID19440 under the same production parameters. Separate conditioning plus three measured requests per length are running. Neither candidate acceptance nor a third win is claimed.
