@@ -343,3 +343,46 @@ Same CUDA toolchain, same serving flags, warmup plus three measured repetitions.
 - Short-prompt ingestion improved 8.8%, but 4K ingestion did not improve, and total wall times rose (512:8.411->8.584s;4K:15.324->15.717s). This does not meet the predicted useful service gain. Revert the candidate rather than retain extra allocation/launch work on inconclusive evidence.
 - End-of-run dedicated/shared memory was exactly equal between this candidate and its immediate control (12116791296/367001600 bytes). Decode also changed despite the prefill-only source change, so small causal claims remain uncertain. Rejection is for lack of demonstrated service benefit, not a proven numerical or isolated-kernel failure.
 - Source/binary/test artifacts remain preserved. The next experiment returns to the retained one-warp/fused-scale baseline and only changes decode block grouping.
+
+## 016 build and correctness passed
+
+- Source review confirmed the row-count constant controls both gate variants' launch bounds, row mapping, grid and block dimensions. For 67 rows, the final block has three active whole warps and five returning warps; no block barrier is bypassed.
+- Build passed. 101/101 PQ2 matrix and 40/40 fusion cases passed with nonzero case-count assertions. Snapshot tools/llamacpp-cuda-mmvq-rows8 and cuda-mmvq-rows8-binary-hashes.json preserve the candidate; source patch cuda-mmvq-rows8-source.patch.
+- Candidate contains only the eight-row change on top of retained kernels. Raw-gate preprocessing was reverted before building. Starting normal actual-service requests with unchanged model/context/batching/KV settings.
+
+## 017 - Four-column recurrent-attention warps: preregistered next experiment
+
+- Existing GATED_DELTA_NET code already reuses q/k loads and scalar gate values across four columns per warp on DGX Spark. SM86 currently owns one column per warp. Test that existing four-column specialization for SM86, S_v128, scalar gates, keeping formulas and state/snapshot addressing unchanged.
+- Host grid geometry must match the compiled device specialization. This changes both prefill and decode but adds no allocation or kernel launch. Register pressure and reduced block count may hurt occupancy.
+- Prediction: at least 5% actual-service ingestion gain, with output not regressing by more than 2%. Source preparation is isolated from experiment016's running binary. Retain the eight threshold/multi-sequence/snapshot CPU-reference cases to validate geometry.
+
+## 016 service result - not retained; 017 build started
+
+- Eight-row candidate: pp512 413.89 tok/s, output34.41; pp4096 516.71, output32.46. Immediate prior control B:405.37/35.74 and525.71/33.77. Request/output hashes matched8/8. Artifact cuda-service-mmvq-rows8-a.jsonl.
+- The predicted >=3% output gain was not demonstrated; request wall times increased against control B. Reverted the exact source patch; candidate binaries and all correctness/results remain available. Environmental variation limits small causal conclusions, but does not justify retaining an unproven change.
+- Applied only the four-column GDN patch on the retained four-row PQ2 decode baseline. Source review passed column coverage, host/device selection, final-state/snapshot/fused-cache addressing, and unchanged S16/32/64 plus KDA fallbacks. Runtime gate will include existing activated/decode/snapshot cases, not only newly added raw-prefill cases.
+- Starting build log cuda-build-gdn-cols4.txt after the service trial completed.
+
+### Experiment 017: build and correctness result
+
+CUDA build succeeded (cuda-build-gdn-cols4.txt). Full GATED_DELTA_NET CPU-reference suite: 47/47 supported tests passed, including raw and activated scalar gates, decode, prefill, snapshots and added token-tail cases. Logs: cuda-gdn-cols4-correctness.stdout.txt / .stderr.txt. Fresh binary snapshot tools/llamacpp-cuda-gdn-cols4 verified against build outputs by SHA256 (cuda-gdn-cols4-binary-hashes.json). Next gate is profiling-off throughput on the stable-path production service.
+
+### Experiment 016: offline resource follow-up
+
+NVIDIA cuobjdump reports identical baseline and eight-row PQ2 resources: unfused 42 registers/thread, fused 37, zero local/stack bytes. SM86 allocation granularity gives unchanged theoretical occupancy: unfused 40 resident warps (83.3%), fused 48 (100%). Grouping eight rows changes block count but provides no occupancy gain. This is static resource analysis, not measured GPU utilization. Reports: cuda-resource-warp-scale-sm86.txt and cuda-resource-mmvq-rows8-sm86.txt.
+
+### Experiment 018: same-process CPU-affinity preregistration
+
+Hypothesis: Windows hybrid-core scheduling contributes to throughput variation between server processes. Native GetSystemCpuSetInformation on this i7-13700 reports one group, P-core logical CPUs 0-15 (mask 0xFFFF), E-core CPUs 16-23, and full original mask 0xFFFFFF. This is a scheduling hypothesis, not an established explanation. Compare identical warmed service requests in A-B-B-A order on one unchanged PID/binary: A original full affinity; B P-core-only. Each leg uses the standard 512/4096 prompts, 256 output, one warmup and three measured repetitions. Require unchanged request/output hashes and at least 3% repeatable throughput improvement without over 2% regression at either prompt length; restore original mask on every exit. No priority, power-plan, model, context, CUDA-kernel or sampling changes during the affinity comparison. Preserve each leg as an exclusive JSONL artifact with masks and process identity.
+
+### Experiment 017: offline register report
+
+Four-column GDN S128 scalar kernels use 72 registers/thread in all raw/activated and KEEP variants, with zero local memory, stack or shared memory. At 128 threads/block this gives 28 theoretical resident warps (58.3%), down from 36 raw-gate or 40 activated-gate warps in the one-column baseline. Reduced repeated work may still offset the lower occupancy; only service throughput decides. Artifact: cuda-resource-gdn-cols4-sm86.txt.
+
+### Experiment 017: first service result — promising ingest, not yet retained
+
+Production service PID23724, profiling off, normal context188416 and q4 KV: cuda-service-gdn-cols4-a.jsonl. Medians pp512 447.145 / tg256 34.801 tok/s, wall8.5555s; pp4096 555.169 / tg256 32.631, wall15.1963s. Versus saved retained-control B (405.367/35.742 and525.707/33.773), ingestion improves10.3%/5.6%, but decode regresses2.6%/3.4%, so this does NOT satisfy the preregistered gate. Requests and generated tokens match8/8. Third-round output recovers36.04/33.88, consistent with significant runtime variation; cause remains unproven. Next:16K/128output long-context trial, then same-process affinity investigation and fresh baseline reversal before any retention claim.
+
+### Experiment 019: shared activation permutations for fused PQ2 decode — preregistration
+
+Hypothesis from the actual-service decode profile: fused FFN up/gate projections can share the activation permutation needed by both integer dots. Instead of separately interleaving weight lookup results qe/qo into qx/qy for each matrix, form ue=byte_perm(u,v,0x6420) and uo=byte_perm(u,v,0x7531) once per eight activation values and dot both matrices against them. Expected source-level PRMT count falls8 to6 per group (8 fewer per32-value chunk), with unchanged weight traffic. Preserve16-bit loads for34-byte PQ2block alignment, allfour codes, each chunk scale expression andfloat accumulation order. Scope only retained SM86 fused PQ2 warp path. Gate: CPU-reference fused/unfused tests with nonzero counts, exact service output tokens, generated-resource review, and >=3% repeatable service decode gain without >2% ingest regression. No speed claim before measurement.
