@@ -127,6 +127,7 @@
 !/scripts/*.sh
 !/scripts/bonsai-cuda-build.ps1
 !/scripts/bonsai-server-run.ps1
+!/scripts/bonsai-server-deploy.ps1
 !/scripts/get-flags.mk
 !/scripts/install-oneapi.bat
 !/scripts/serve-static.js

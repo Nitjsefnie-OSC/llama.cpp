@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $true)][string]$BinaryDir,
     [string]$Root,
     [int]$Context = 188416,
-    [int]$Port = 8090
+    [int]$Port = 8090,
+    [string]$CudaTimingLog
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,5 +19,32 @@ $serverArgs = @(
     '--reasoning-format', 'deepseek', '--host', '0.0.0.0', '--port', $Port,
     '--alias', 'bonsai-2-27b', '--chat-template-file', "$Root\bonsai-chat-template.jinja"
 )
-& "$BinaryDir\llama-server.exe" @serverArgs
-exit $LASTEXITCODE
+if ($CudaTimingLog) {
+    $CudaTimingLog = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($CudaTimingLog)
+    # Reserve a new file before llama's logger opens it in write mode.
+    $logReservation = [System.IO.File]::Open($CudaTimingLog, [System.IO.FileMode]::CreateNew)
+    $logReservation.Dispose()
+    # Backend INFO records use the common logger's TRACE threshold.
+    $serverArgs += @('--log-file', $CudaTimingLog, '--log-verbosity', '4')
+}
+$stableBinaryDir = Join-Path $Root 'tools\llamacpp-prism'
+if (-not [string]::Equals($BinaryDir.TrimEnd('\', '/'), $stableBinaryDir.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase)) {
+    & "$PSScriptRoot\bonsai-server-deploy.ps1" -BinaryDir $BinaryDir -Root $Root
+    if (-not $?) { throw 'Server deployment failed' }
+    $BinaryDir = $stableBinaryDir
+}
+$previousCudaTiming = [Environment]::GetEnvironmentVariable('DEBUG_CUDA_TIMING', 'Process')
+try {
+    if ($CudaTimingLog) { $env:DEBUG_CUDA_TIMING = '1' }
+    & "$BinaryDir\llama-server.exe" @serverArgs
+    $serverExitCode = $LASTEXITCODE
+} finally {
+    if ($CudaTimingLog) {
+        if ($null -eq $previousCudaTiming) {
+            Remove-Item Env:DEBUG_CUDA_TIMING -ErrorAction SilentlyContinue
+        } else {
+            [Environment]::SetEnvironmentVariable('DEBUG_CUDA_TIMING', $previousCudaTiming, 'Process')
+        }
+    }
+}
+exit $serverExitCode

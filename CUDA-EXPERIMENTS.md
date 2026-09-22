@@ -215,3 +215,51 @@ Same CUDA toolchain, same serving flags, warmup plus three measured repetitions.
 - Evidence supports about 5% higher service output throughput and about 4% higher ingestion throughput at 4096 input tokens. The 512-token ingestion difference is too small/noisy to claim a meaningful gain.
 - Started additional baseline validation at 16384 input tokens and 128 output tokens (warmup plus two measured repetitions), followed by a candidate repeat and the same long-prompt test. No context reduction.
 - Artifacts: `cuda-service-built-baseline-a.jsonl`, `cuda-service-warp-scale-a.jsonl`; long-prompt baseline will be `cuda-service-built-baseline-16k.jsonl`.
+
+## 011 - Repeat exposes ingestion instability (2026-09-22T15:47:08.513044+00:00)
+
+| Artifact | Prompt tokens | Ingest tok/s | Output tok/s | Wall seconds |
+|---|---:|---:|---:|---:|
+| cuda-service-built-baseline-16k.jsonl | 16384 | 462.27 | 24.86 | 40.561 |
+| cuda-service-warp-scale-b.jsonl | 512 | 314.78 | 33.67 | 9.248 |
+| cuda-service-warp-scale-b.jsonl | 4096 | 381.21 | 31.68 | 18.797 |
+
+- Candidate repeat B uses exactly the same binary as candidate A, with unchanged service flags. Short-prompt output remains faster, but 4096-token ingestion dropped from 502.07 to about 380 tok/s. This invalidates treating the first-pass ingestion result as a stable gain; the source optimization is retained provisionally while the environment sensitivity is diagnosed.
+- Candidate B process memory: dedicated 12085395456 bytes, shared 398458880 bytes; candidate A: dedicated 12093767680, shared 390070272. This small inverse change is a possible residency signal, not proof of a cause. GPU temperatures/clocks and full request/output data are preserved in the artifacts.
+- Baseline 16K completed; candidate 16K is next, then actual-service CUDA timing. Timing disables CUDA graph replay and therefore is diagnostic only, not acceptance throughput.
+- User reported repeated network permission prompts. Read-only firewall inspection found persistent path-specific TCP/UDP allow rules for each tested executable directory on Domain/Public profiles, current network DomainAuthenticated, and no enabled inbound block rules. Future deployments will reuse the already-approved tools/llamacpp-prism/llama-server.exe path and preserve immutable snapshots, rather than launching each new directory.
+
+## 011 continuation - 16K and stable firewall path (2026-09-22T15:50:52.186282+00:00)
+
+- Long-context baseline: ingest 462.27 tok/s, output 24.86 tok/s, wall 40.561 s. Candidate repeat: ingest 368.48 tok/s, output 26.60 tok/s, wall 49.254 s. Exact request/output-content matches: 3/3 including warmup. Output improves about 7%; ingestion regression in this service instance remains unexplained and must not be hidden by the initial gain.
+- Added persistent launcher deployment tooling. Every candidate is now copied to the already firewall-approved `tools/llamacpp-prism` path with verified file hashes, while preserving the entire previous directory. No firewall rules or profile notifications were changed. Existing grants cover the current Domain network and Public, not Private.
+- First real deployment receipt: `bonsai-deploy-20260922T175003285-9cfe7cc023d741f19d39cf5dd684a338.json`. Original package preserved at `C:\Users\zmatek\llm\tools\llamacpp-deploy-backups\20260922T175003285-9cfe7cc023d741f19d39cf5dd684a338`. Production launcher now adds portable CUDA 12.9.1 to PATH; original launcher preserved at `logs/cuda-maintenance/serve-qwen38.before-cuda-deploy.ps1`.
+- Started actual-service CUDA event profile at the same context/flags using DEBUG_CUDA_TIMING and the server's built-in log file. Profile artifacts: `cuda-service-profile-6295.log`, `cuda-service-profile-6295-requests.jsonl`. No throughput acceptance numbers will be taken with profiling enabled.
+
+## 012 - Actual-service CUDA profile: first capture failed
+
+- Deployed the existing candidate to the stable firewall-approved path and issued two real /completion requests (512 input, 8 output). Requests succeeded; these instrumented rates are not acceptance measurements.
+- The built-in server log contained application messages but zero CUDA_TIMING records. The new parser correctly returned exit 2 with no graphs, so there is no usable attribution from this attempt. Investigating backend log filtering before retrying; preserve the failed log and JSON.
+- Independent review of commit 6295cbe5 found no critical/important issue in the PQ2 kernels or timing ownership/graph gating. Minor uncovered case: the new single-column SWIGLU_OAI fusion branch lacks a focused correctness case; static operand/clipping behavior matches baseline.
+- Stable-deployment tests passed under Windows PowerShell 5.1 and PowerShell 7, including hashes, complete backup, path/junction guards, running-process refusal, and injected swap rollback. Parser has 20 checks and runner 8 mocked checks. Real deployment also succeeded, with file hashes in its receipt.
+
+## 012 capture correction
+
+- Source proof: common/log.cpp maps GGML_LOG_LEVEL_INFO to TRACE (level 4) and filters before enqueueing file output; default verbosity is level 3. llama_log_set forwards that callback to ggml. The instrumentation was executing but its records were suppressed.
+- Updated the diagnostic runner to add --log-verbosity 4 only when CudaTimingLog is requested. Normal runs keep their original verbosity. Mock checks confirmed both paths and environment restoration.
+- Restarted the same candidate at the same stable path; fresh log `cuda-service-profile-6295-v4.log` contains two CUDA_TIMING_TOTAL records from startup warmup. Profiling requests are recorded in `cuda-service-profile-6295-v4-requests.jsonl`.
+
+## 013 - SM86 asynchronous MMQ activation staging: preregistered experiment
+
+- Actual-service profile is now captured. Across the first post-warmup selection, PQ2 MUL_MAT contributes 984.7/1499.5 ms (65.7%) of recorded operation time, GATED_DELTA_NET 212.8 ms (14.2%). These diagnostics include synchronization/instrumentation overhead and are not throughput acceptance. Correcting the parser phase heuristic: Hadamard's auxiliary BF16/F32 matrices have width >1 even during single-token decode, so phase detection must prefer quantized projection widths.
+- Hypothesis: on SM86, PQ2 MMQ at J=128 can overlap activation-tile loads with computation using the existing asynchronous Y-buffer path. It already runs at one CTA per SM; adding the second Y buffer should fit shared memory without lowering CTA residency.
+- Change to test: enable existing async_buffer_y for type PQ2_0, SM86, J=128 in both device selection and host shared-memory sizing. Keep the existing DGX Spark condition and all tile/occupancy selection unchanged.
+- Prediction: at least 3% higher actual-service ingestion at 4096 input tokens; decode unchanged within 2%. Failure to exceed repeat variation, or material regressions, rejects the candidate. Context, Q4 KV, batching, model, prompt and output lengths stay unchanged.
+- Validation: build, all 48 PQ2 matrix correctness cases and 40 fusion cases; then matched actual-service requests with profiling off and exact output comparison. Retain raw results regardless of outcome.
+
+## 012 result and 013 sizing correction
+
+- Corrected parser output (`cuda-service-profile-6295-v4-phases.json`, skip first 11 graphs): 20 complete graphs, no malformed/incomplete data; selected 2 prefill + 7 decode graphs. Prefill: graph 1174.567 ms, operation sum 1162.828 ms (11.739 ms gap). Decode: graph 325.369 ms, operation sum 293.262 ms (32.107 ms gap). Instrumentation and host submission gaps remain visible rather than being assigned to kernels.
+- Prefill's 48 GATED_DELTA_NET calls total 201.450 ms (17.32% of operation sum). Main FFN PQ2 projections total 493.170 ms (42.41%). Decode's fused gate PQ2 projections total 63.918 ms (21.80%). The pipeline experiment targets the dominant prefill matrices; a separate read-only investigation is examining the recurrent attention cost.
+- The SM86/J128 shared-memory calculation is 57,856 bytes (56.5 KiB) baseline and 76,288 bytes (74.5 KiB) with two Y buffers: X=38,912, ids=512, each Y=18,432. This corrects the approximate preregistration sizing; the one-CTA residency hypothesis is unchanged.
+- Tooling received independent review with no blocking issue. The real verbosity-4 profile verifies the logging integration after mocked tests. Parser phase fixes additionally passed 11 synthetic checks including the auxiliary-matrix counterexample.
