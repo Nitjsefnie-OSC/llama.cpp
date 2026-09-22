@@ -29,6 +29,18 @@
 // llama_context
 //
 
+static bool llama_lazy_compute_reserve_enabled() {
+    static const bool enabled = [] {
+        const char * value = getenv("LLAMA_LAZY_COMPUTE_RESERVE");
+        const bool result = value && strcmp(value, "1") == 0;
+        if (result) {
+            LLAMA_LOG_INFO("LLAMA_LAZY_COMPUTE_RESERVE=1: allocating compute buffers on demand\n");
+        }
+        return result;
+    }();
+    return enabled;
+}
+
 // Verify that every Hadamard-folded weight consumed by the graph receives its
 // activation-side transform, and every latent lookup table gets the inverse.
 // An architecture whose matmul path bypasses the transform helpers would
@@ -603,7 +615,10 @@ llama_context::~llama_context() {
 
             const size_t size_exp = backend_buf_exp_size[i];
             const size_t size_act = ggml_backend_sched_get_buffer_size(sched.get(), backend);
-            if (size_exp == size_act) {
+            if (llama_lazy_compute_reserve_enabled()) {
+                LLAMA_LOG_INFO("%s: %10s compute buffer size = %8.2f MiB (allocated on demand)\n",
+                    __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0));
+            } else if (size_exp == size_act) {
                 LLAMA_LOG_DEBUG("%s: %10s compute buffer size is %8.4f MiB, matches expectation of %8.4f MiB\n",
                     __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
             } else {
@@ -741,17 +756,20 @@ void llama_context::sched_reserve() {
     int n_nodes_tg  = -1;
 
     const uint32_t n_outputs_pp = std::min(n_tokens, cparams.n_outputs_max);
+    // Keep worst-case graph construction and backend selection, but let actual
+    // ubatches allocate their workspace when lazy reservation is enabled.
+    const bool split_only = model.hparams.no_alloc || llama_lazy_compute_reserve_enabled();
 
     // reserve pp (prompt processing) graph first so that buffers are only allocated once
     {
         auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(),
-                model.hparams.no_alloc, model.hparams.no_alloc ? backend_buf_exp_size.data() : nullptr);
+                split_only, model.hparams.no_alloc ? backend_buf_exp_size.data() : nullptr);
         if (!gf) {
             if (cparams.pipeline_parallel) {
                 LLAMA_LOG_WARN("%s: compute buffer allocation failed, retrying without pipeline parallelism\n", __func__);
                 cparams.pipeline_parallel = false;
                 sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, cparams.op_offload));
-                gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get());
+                gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(), split_only);
             }
             if (!gf) {
                 throw std::runtime_error("failed to allocate compute pp buffers");
@@ -764,7 +782,7 @@ void llama_context::sched_reserve() {
 
     // reserve with tg (token generation) graph to get the number of splits and nodes
     {
-        auto * gf = graph_reserve(n_seqs, n_seqs, n_seqs, mctx.get(), model.hparams.no_alloc);
+        auto * gf = graph_reserve(n_seqs, n_seqs, n_seqs, mctx.get(), split_only);
         if (!gf) {
             throw std::runtime_error("failed to allocate compute tg buffers");
         }
@@ -779,7 +797,7 @@ void llama_context::sched_reserve() {
         //
         // auto * gf = graph_reserve(n_tokens, 1, n_tokens, mctx.get());
         //
-        auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(), model.hparams.no_alloc);
+        auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(), split_only);
         if (!gf) {
             throw std::runtime_error("failed to allocate compute pp buffers");
         }
@@ -941,7 +959,12 @@ bool llama_context::memory_update(bool optimize) {
 
         const uint32_t n_outputs_max = std::min(n_tokens, cparams.n_outputs_max);
 
-        auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get());
+        const bool split_only = llama_lazy_compute_reserve_enabled();
+        if (split_only) {
+            // The allocating reserve used to synchronize any memory-update work.
+            ggml_backend_sched_synchronize(sched.get());
+        }
+        auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get(), split_only);
         if (!gf) {
             LLAMA_LOG_ERROR("%s: failed to reserve graph after the memory update\n", __func__);
         }

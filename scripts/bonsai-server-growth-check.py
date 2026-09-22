@@ -104,14 +104,45 @@ def compare_response(body, response, reference, atol):
                     f"Logprob differs at token {index}, id={got['id']}: {got['logprob']} vs {ref['logprob']}")
 
 
-def load_reference(path, concurrent_only=False):
+def atomic_results(body, response):
+    """Validate the bulk exchange and return logical completions keyed by actual slot."""
+    require(isinstance(body, dict) and "id_slot" not in body and body.get("stream") is False,
+            "Atomic request must omit id_slot and disable streaming")
+    prompts = body.get("prompt")
+    require(isinstance(prompts, list) and len(prompts) == 4 and
+            all(isinstance(p, list) and p and p == prompts[0] for p in prompts) and
+            all(type(t) is int and t >= 0 for t in prompts[0]),
+            "Atomic request requires four identical token prompts")
+    require(isinstance(response, list) and len(response) == 4 and all(isinstance(r, dict) for r in response),
+            "Atomic response must contain four objects")
+    for key in ("index", "id_slot"):
+        values = [item.get(key) for item in response]
+        require(all(type(value) is int for value in values) and set(values) == set(range(4)),
+                f"Atomic response requires unique {key} values 0..3")
+    by_slot = {}
+    for item in response:
+        logical_body = dict(body, prompt=prompts[item["index"]], id_slot=item["id_slot"])
+        validate_response(logical_body, item)
+        by_slot[item["id_slot"]] = {"request": logical_body, "response": item}
+    return by_slot
+
+
+def load_reference(path, concurrent_only=False, atomic_concurrent=False):
     with path.open(encoding="utf-8") as source:
         rows = [json.loads(line) for line in source]
     require(rows and rows[-1].get("kind") == "summary" and rows[-1].get("status") == "passed",
             "Reference must be a completed passing run")
-    require(not any(row.get("kind") == "error" for row in rows), "Reference contains errors")
+    require(not any(row.get("kind") in ("error", "http_error") for row in rows), "Reference contains errors")
     metadata = [row for row in rows if row.get("kind") == "metadata"]
     results = [row for row in rows if row.get("kind") == "result"]
+    if atomic_concurrent:
+        require(len(metadata) == 1 and len(results) == 1 and rows[-1].get("cases") == 4,
+                "Atomic reference requires metadata, one bulk result and four cases")
+        require(all(row.get("mode") == "atomic-concurrent" for row in (metadata[0], rows[-1])),
+                "Reference must explicitly use atomic-concurrent mode")
+        require(results[0].get("case") == "atomic-concurrent", "Atomic reference case differs")
+        atomic_results(results[0]["request"], results[0]["response"])
+        return metadata[0], {"atomic-concurrent": results[0]}
     allowed_counts = (4, 8) if concurrent_only else (8,)
     require(len(metadata) == 1 and len(results) in allowed_counts,
             f"Reference requires metadata and result count in {allowed_counts}")
@@ -127,8 +158,9 @@ def load_reference(path, concurrent_only=False):
 
 
 def run(args, request=request_json):
-    reference = load_reference(args.reference, args.concurrent_only) if args.reference else None
-    mode = "concurrent-only" if args.concurrent_only else "full"
+    require(not args.atomic_concurrent or args.concurrent_only, "--atomic-concurrent requires --concurrent-only")
+    reference = load_reference(args.reference, args.concurrent_only, args.atomic_concurrent) if args.reference else None
+    mode = "atomic-concurrent" if args.atomic_concurrent else "concurrent-only" if args.concurrent_only else "full"
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as output:
         lock = threading.Lock()
@@ -181,7 +213,13 @@ def run(args, request=request_json):
             tokenized = call("/tokenize", tokenize_body)
             cases = make_cases(tokenized["tokens"], args.tokens)
             selected_cases = cases[4:] if args.concurrent_only else cases
-            if reference:
+            if args.atomic_concurrent:
+                bulk_body = dict(cases[4][1], prompt=[body["prompt"] for _, body in cases[4:]])
+                del bulk_body["id_slot"]
+                if reference:
+                    require(bulk_body == reference[1]["atomic-concurrent"]["request"],
+                            "Atomic reference request differs")
+            elif reference:
                 reference_cases = cases if len(reference[1]) == 8 else cases[4:]
                 require(set(reference[1]) == {name for name, _ in reference_cases}, "Reference case names differ")
                 for name, body in selected_cases:
@@ -212,17 +250,34 @@ def run(args, request=request_json):
                     compare_response(body, result["response"], first_result, args.logprob_atol)
                     print("PASS repeated 512-token prompt matches before growth", flush=True)
             idle_slots(call("/slots"))
-            print("Checking four concurrent explicit slots", flush=True)
-            barrier = threading.Barrier(4)
-            errors = []
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = [executor.submit(exercise, name, body, barrier) for name, body in cases[4:]]
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as error:
-                        errors.append(str(error))
-            require(not errors, f"Concurrent cases failed: {errors}")
+            if args.atomic_concurrent:
+                print("Checking four prompts in one atomic request", flush=True)
+                try:
+                    response = call("/completion", bulk_body, case="atomic-concurrent")
+                    actual = atomic_results(bulk_body, response)
+                    if reference:
+                        ref = reference[1]["atomic-concurrent"]
+                        expected = atomic_results(ref["request"], ref["response"])
+                        for slot in range(4):
+                            compare_response(actual[slot]["request"], actual[slot]["response"],
+                                             expected[slot], args.logprob_atol)
+                    for slot in range(4):
+                        print(f"PASS atomic index={actual[slot]['response']['index']} slot={slot}", flush=True)
+                except Exception as error:
+                    record({"kind": "error", "case": "atomic-concurrent", "error": str(error)})
+                    raise
+            else:
+                print("Checking four concurrent explicit slots", flush=True)
+                barrier = threading.Barrier(4)
+                errors = []
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    futures = [executor.submit(exercise, name, body, barrier) for name, body in cases[4:]]
+                    for future in as_completed(futures):
+                        try:
+                            future.result()
+                        except Exception as error:
+                            errors.append(str(error))
+                require(not errors, f"Concurrent cases failed: {errors}")
             record({"kind": "summary", "status": "passed", "mode": mode,
                     "cases": len(selected_cases), "compared": reference is not None})
             print(f"PASS {mode} correctness checks", flush=True)
@@ -238,11 +293,15 @@ def main():
     parser.add_argument("--reference", type=Path, help="completed passing artifact to compare")
     parser.add_argument("--concurrent-only", action="store_true",
                         help="run only slots 0..3 concurrently; accepts a passing four- or eight-case reference")
+    parser.add_argument("--atomic-concurrent", action="store_true",
+                        help="requires --concurrent-only; send four identical prompts in one request; atomic references only")
     parser.add_argument("--tokens", type=int, default=16)
     parser.add_argument("--timeout", type=float, default=600, help="finite HTTP socket/barrier timeout in seconds")
     parser.add_argument("--logprob-atol", type=float, default=LOGPROB_ATOL,
                         help="absolute log-probability tolerance (default 1e-4 natural-log units; relative tolerance zero)")
     args = parser.parse_args()
+    if args.atomic_concurrent and not args.concurrent_only:
+        parser.error("--atomic-concurrent requires --concurrent-only")
     if not 1 <= args.tokens <= 512 or not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error("tokens must be 1..512 and timeout finite and positive")
     if not math.isfinite(args.logprob_atol) or not 0 <= args.logprob_atol <= 0.01:

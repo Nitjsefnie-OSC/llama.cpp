@@ -76,7 +76,7 @@ class GrowthTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name)
         self.args = Namespace(url="http://mock", output=self.path/"baseline.jsonl", reference=None,
-                              tokens=2, timeout=2, logprob_atol=1e-4, concurrent_only=False)
+                              tokens=2, timeout=2, logprob_atol=1e-4, concurrent_only=False, atomic_concurrent=False)
 
     def rows(self):
         return [json.loads(line) for line in self.args.output.read_text().splitlines()]
@@ -301,6 +301,143 @@ class GrowthTests(unittest.TestCase):
                 GROWTH.idle_slots(slots)
         with self.assertRaisesRegex(ValueError, "too short"):
             GROWTH.make_cases([1, 2], 2)
+
+
+class AtomicService(MockService):
+    def __init__(self, slots=(2, 0, 3, 1), delta=0, mutate=None, **kwargs):
+        super().__init__(**kwargs)
+        self.slots, self.delta, self.mutate = slots, delta, mutate
+
+    def __call__(self, url, route, body, timeout):
+        if route != "/completion":
+            return super().__call__(url, route, body, timeout)
+        assert "id_slot" not in body and body["stream"] is False
+        assert len(body["prompt"]) == 4 and all(p == body["prompt"][0] for p in body["prompt"])
+        self.completions.append(copy.deepcopy(body))
+        results = []
+        for index, slot in enumerate(self.slots):
+            item = response(dict(body, prompt=body["prompt"][index], id_slot=slot))
+            item["index"] = index
+            # Distinct per-slot results detect accidental comparison by prompt index.
+            item["content"] = f"slot-{slot}"
+            for probability in item["completion_probabilities"]:
+                probability["logprob"] -= slot * 0.01 + self.delta
+                for top in probability["top_logprobs"]:
+                    top["logprob"] -= slot * 0.01 + self.delta
+            results.append(item)
+        if self.mutate:
+            self.mutate(results)
+        return list(reversed(results))
+
+
+class AtomicTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name)
+        self.args = Namespace(url="http://mock", output=self.path/"atomic.jsonl", reference=None,
+                              tokens=2, timeout=2, logprob_atol=1e-4, concurrent_only=True, atomic_concurrent=True)
+
+    def rows(self):
+        return [json.loads(line) for line in self.args.output.read_text().splitlines()]
+
+    def test_bulk_once_and_reference_compares_actual_slots(self):
+        service = AtomicService()
+        GROWTH.run(self.args, service)
+        self.assertEqual(len(service.completions), 1)
+        rows = self.rows()
+        sent = [r for r in rows if r.get("route") == "/completion" and r["kind"] == "request"]
+        results = [r for r in rows if r["kind"] == "result"]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(sent[0]["request_id"], results[0]["request_id"])
+        self.assertEqual(len(results[0]["response"]), 4)
+        self.assertEqual({(r["index"], r["id_slot"]) for r in results[0]["response"]},
+                         {(0, 2), (1, 0), (2, 3), (3, 1)})
+        self.assertEqual(rows[-1]["cases"], 4)
+        self.assertEqual(rows[-1]["mode"], "atomic-concurrent")
+        self.assertEqual(next(r for r in rows if r["kind"] == "metadata")["mode"], "atomic-concurrent")
+        self.args.reference = self.args.output
+        self.args.output = self.path/"remapped.jsonl"
+        GROWTH.run(self.args, AtomicService(slots=(0, 1, 2, 3), delta=0.00005))
+        self.assertTrue(self.rows()[-1]["compared"])
+
+    def test_malformed_bulk_retained_before_validation(self):
+        mutations = [lambda r: r.pop(), lambda r: r[1].update(id_slot=r[0]["id_slot"]),
+                     lambda r: r[1].update(index=r[0]["index"]), lambda r: r[1].pop("index"),
+                     lambda r: r[1].pop("id_slot"), lambda r: r[1].update(index=True),
+                     lambda r: r[1].update(id_slot=4)]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                self.args.output = self.path/f"malformed-{index}.jsonl"
+                with self.assertRaises(ValueError):
+                    GROWTH.run(self.args, AtomicService(mutate=mutate))
+                rows = self.rows()
+                self.assertEqual(len([r for r in rows if r["kind"] == "result"]), 1)
+                self.assertEqual(rows[-1]["status"], "failed")
+
+    def test_atomic_and_http_references_cannot_mix(self):
+        GROWTH.run(self.args, AtomicService())
+        atomic_path = self.args.output
+        self.args.atomic_concurrent = False
+        self.args.reference = atomic_path
+        self.args.output = self.path/"http-reject.jsonl"
+        with self.assertRaises(ValueError):
+            GROWTH.run(self.args, MockService())
+        self.args.reference = None
+        self.args.output = self.path/"http.jsonl"
+        GROWTH.run(self.args, MockService())
+        self.args.reference = self.args.output
+        self.args.atomic_concurrent = True
+        self.args.output = self.path/"atomic-reject.jsonl"
+        with self.assertRaises(ValueError):
+            GROWTH.run(self.args, AtomicService())
+
+    def test_probability_mismatch_and_exact_bulk_request(self):
+        GROWTH.run(self.args, AtomicService())
+        self.args.reference = self.args.output
+        self.args.output = self.path/"mismatch.jsonl"
+        with self.assertRaisesRegex(ValueError, "Logprob differs"):
+            GROWTH.run(self.args, AtomicService(delta=0.001))
+        self.assertEqual(len([r for r in self.rows() if r["kind"] == "result"]), 1)
+        self.assertEqual(self.rows()[-1]["status"], "failed")
+        rows = [json.loads(l) for l in self.args.reference.read_text().splitlines()]
+        next(r for r in rows if r["kind"] == "result")["request"]["seed"] = 999
+        self.args.reference = self.path/"changed-request.jsonl"
+        self.args.reference.write_text("".join(json.dumps(r)+"\n" for r in rows))
+        self.args.output = self.path/"request-mismatch.jsonl"
+        service = AtomicService()
+        with self.assertRaisesRegex(ValueError, "request differs"):
+            GROWTH.run(self.args, service)
+        self.assertFalse(service.completions)
+
+    def test_atomic_requires_explicit_mode_and_concurrent_only(self):
+        self.args.concurrent_only = False
+        with self.assertRaisesRegex(ValueError, "requires --concurrent-only"):
+            GROWTH.run(self.args, AtomicService())
+        self.args.concurrent_only = True
+        GROWTH.run(self.args, AtomicService())
+        rows = self.rows()
+        next(r for r in rows if r["kind"] == "metadata").pop("mode")
+        reference = self.path/"missing-mode.jsonl"
+        reference.write_text("".join(json.dumps(r)+"\n" for r in rows))
+        with self.assertRaises(ValueError):
+            GROWTH.load_reference(reference, concurrent_only=True, atomic_concurrent=True)
+
+    def test_busy_and_configuration_checks_before_bulk(self):
+        service = AtomicService(busy=True)
+        with self.assertRaisesRegex(ValueError, "busy"):
+            GROWTH.run(self.args, service)
+        self.assertFalse(service.completions)
+        self.args.output = self.path/"bad-context.jsonl"
+        service = AtomicService()
+        def wrong_context(url, route, body, timeout):
+            result = service(url, route, body, timeout)
+            if route == "/props": result["default_generation_settings"]["n_ctx"] = 4096
+            return result
+        with self.assertRaisesRegex(ValueError, "unchanged context"):
+            GROWTH.run(self.args, wrong_context)
+        self.assertFalse(service.completions)
 
 
 if __name__ == "__main__":

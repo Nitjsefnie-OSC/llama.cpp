@@ -551,3 +551,72 @@ Replay diagnostics parsed successfully: 128 executions with 52 decode replays an
 Independent analysis confirmed baseline concurrent admission order0,1,3 then2; enabled order0,1,2 then3. Only slots2/3 probability comparisons failed, while all sequential cases and slots0/1 had bit-identical full probability records. Baseline identical concurrent prompts already vary across slots by up to0.02662753 chosen-token log probability. This establishes a scheduling confound, not candidate acceptance. Native multi-prompt /completion queues all four tasks under one mutex before slot updates; a controlled atomic four-prompt check will retain the1e-4 gate.
 
 The reviewed concurrent-only checker extension passed16mocktests and preserves full-suite behavior, full request/response audit, and four/eight-case reference validation.
+
+
+### 023 concurrent disabled-control replay also fails probability reference
+
+`cuda-lazy-reserve-concurrent-off-a.jsonl`, monitor53293, exited1 with LLAMA_LAZY_COMPUTE_RESERVE=0. Slots0/3 passed; the remaining cases failed strict probability comparisons, including first-token -0.04076955 vs -0.03808111 and top-token id248046 -3.61306787 vs -3.59817123. This confirms the HTTP-admission probability comparison is confounded even with the allocation change disabled. It does not by itself pass the candidate.
+
+Implementing an atomic four-prompt native /completion mode that enqueues all requests together, omits shared id_slot, verifies full index/slot sets, and compares by actual slot with the existing1e-4 probability tolerance. Capturing enabled throughput with diagnostics off while controlled correctness validation is prepared; no acceptance decision until both gates pass.
+
+
+### 023 first enabled throughput trial passes numerical speed gate; acceptance pending
+
+`cuda-service-lazy-reserve-on-a.jsonl` (PID24388, monitor10175) completed exit0. Samebinary/configasoffA, onlylazyreservationenabled; bothdiagnosticsoff. Eightrequest/generated-tokenpairsmatch. Medians:512ingest402.888/output33.869tok/s, wall8.8119s;4096ingest501.782/output32.012, wall16.1327s. AgainstoffA:+30.94%/+39.48%ingest and+8.02%/+5.47%output;wall-10.15%/-18.49%.
+
+These gains exceedthepre-registeredthresholds, butthecandidateisnotyetaccepted: controlledfour-slotprobabilitiesandrepeatmeasurementsremain. Enabledingestspeedsareclose toearlierbestretainedruns,sotheobservedgainmayreflectavoidingcurrentmemory-relatedslowdownratherthanraisingthepreviouspeak. NextmeasurementorderisoffA,onA,onB,offBwiththesamebinary; noadditionalGPUworkrunsalongsideeachperformancebenchmark.
+
+
+### 023 measurement details and controlled concurrency tooling
+
+The first enabled run measured 402.888 ingest / 33.869 output tok/s at 512 tokens, and 501.782 / 32.012 at 4096. The disabled control measured 307.688 / 31.354 and 359.740 / 30.350 respectively. All eight request and token pairs match; controlled concurrency and repeat measurements remain pending.
+
+At the final 4K sample, disabled control process allocation counters were 11503.57 MiB dedicated plus 402.00 MiB shared; enabled counters were 10744.99 plus 106.00 MiB, about 1054.59 MiB lower in total. Both samples reported GPU temperature 84 C, SM clock 1777 MHz, memory clock 7301 MHz and power about 169 W. Allocation counters still do not prove unique physical residency or paging.
+
+The atomic four-prompt checker passed independent review and 22 CPU mock tests, including malformed indices/slots, index-to-slot remapping, exact bulk-request matching, probability differences, and atomic/HTTP reference isolation. It requires --concurrent-only and preserves all previous 16 tests.
+
+### 024 preparation: trace-guided prefill FFN fusion eligibility
+
+The recorded 508-token profile has 64 separate PQ2 gate/up/SwiGLU groups with K=5120 and 17408 output rows. A fused kernel could remove duplicate activation quantization and about 8.43 GiB of intermediate write/read traffic per 508-token graph. This is a logical traffic estimate, not a measured speed gain. Dual accumulators may increase registers and spill; nonlinear SwiGLU must follow complete accumulations, never partial split-K sums.
+
+A separate DEBUG_CUDA_FFN_FUSION diagnostic patch is under independent review to verify actual structural eligibility and tensor consumers. It adds no CUDA calls, synchronization or execution changes. Actual MMQ dispatch, tile and stream-K are explicitly unknown rather than reconstructed. This patch is not part of the current allocation experiment binary.
+
+
+### 023 enabled repeat B completed
+
+`cuda-service-lazy-reserve-on-b.jsonl` (same PID24388, monitor7483) completed exit0 with eight matching request/token pairs. 512 tokens: ingest 399.436, output 34.889 tok/s, wall 8.6056s; 4096 tokens: ingest 508.399, output 32.886 tok/s, wall 15.8174s.
+
+Repeat disabled control B follows to complete off/on/on/off measurement order. Controlled atomic four-slot probability checks remain required.
+
+
+### 023 off/on/on/off throughput comparison completed
+
+Disabled repeat B (`cuda-service-lazy-reserve-off-b.jsonl`, PID22696, monitor92621) exited0: 512 ingest280.687/output32.565 tok/s, wall9.7073s; 4096 ingest328.317/output30.778, wall20.7975s. All32 request/generated-token pairs across the four runs match.
+
+Pooled medians over six measured repetitions per condition and prompt length:
+
+| Prompt | Disabled ingest | Enabled ingest | Change | Disabled output | Enabled output | Change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 294.551 | 401.162 | +36.19% | 32.438 | 34.318 | +5.80% |
+| 4096 | 340.892 | 503.881 | +47.81% | 30.665 | 32.440 | +5.79% |
+
+The speed gate passes in this current environment. These rates recover ingestion toward earlier best measurements; do not claim a 48% increase over the historical best. Final acceptance still requires the controlled atomic four-slot probability check. Diagnostic replay logging is enabled only for that correctness comparison, separately from the completed performance trials.
+
+### 025 preregistration: compile fixed FFN dimensions into decode
+
+The user suggested compilation guided by actual execution. Existing fused PQ2 SASS retains runtime K/32 setup, five loop increments/comparisons/branches for K5120, and signed division/remainder address work. The inner four-element dot loop is already unrolled. Test a guarded SM86 fused-decode specialization only for K5120 and17408 rows, keeping four warps/four rows per CTA, sequential floating-point accumulation, existing permutations and exact math. Other shapes keep the current path. Avoid the larger seventeen-iteration K17408 unroll initially because register and code-size growth may regress performance. Require at least3% service output gain with no more than2% ingest regression, matching tokens, CPU-reference CUDA checks, and SASS/register inspection. Source preparation runs separately; no candidate build or GPU work overlaps performance trials.
+
+
+### 023 accepted: controlled atomic correctness passed
+
+Both atomic four-prompt runs completed exit 0: `cuda-lazy-atomic-off-a.jsonl` and `cuda-lazy-atomic-on-a.jsonl`. Same candidate binary, lazy flag 0 versus 1, context 188416, automatic four slots, batch/ubatch 512, Q4 KV. Exact requests, generated tokens, content and top-five log probabilities pass the unchanged absolute 1e-4 tolerance for all four actual slots. Graph execute widths after saved pre-request offsets are identical: 496, 16, then fifteen width-4 executions. Evidence: `cuda-lazy-atomic-graph-comparison.json` and the paired graph logs. This removes the prior HTTP admission confound without relaxing the probability gate. The checker has 22 passing mock tests and independent review.
+
+One analysis attempt used the wrong baseline offset key and accidentally included two startup executions. It failed the sequence assertion; correcting the key from byte_offset to the recorded offset_bytes yielded the identical request-only sequences above. No service trial was rerun or altered for this analysis correction.
+
+Combined with the sequential growth/repeated-prompt checks, CUDA reference tests, allocator failure/retry regression and completed off/on/on/off throughput trials, experiment 023 is retained as the second validated service win. Pooled current rates: 512 tokens 401.162 ingest / 34.318 output tok/s, 4096 tokens 503.881 / 32.440. Versus paired current disabled controls, +36.19% / +47.81% ingest and +5.80% / +5.79% output. Ingest recovers earlier peak territory rather than exceeding the historical best by those percentages. Workspace grows on demand and remains grown after large requests; full-context memory demand is not eliminated. The persistent Prism launcher will opt in to LLAMA_LAZY_COMPUTE_RESERVE=1; the library default remains off.
+
+### 024/025 implementation review before compilation
+
+The FFN diagnostic v2 passed independent source review after canonical operand-order eligibility was added. It is inert unless DEBUG_CUDA_FFN_FUSION is exactly 1. Runtime eligibility is still unproven.
+
+The exact K5120/17408-row fused PQ2 decode unroll passed independent spec and quality review. The generic loop, eligibility guards, ordered accumulations, four-warps/four-rows layout and epilogue are preserved. Four exact-shape reference tests cover SWIGLU/GEGLU with biases off/on. Source and static proof are preserved as `cuda-pq2-k5120-unroll-source.patch` and `cuda-pq2-k5120-unroll-static-proof.json`. No speed claim before compilation, CUDA correctness, SASS inspection and actual-service comparison.
