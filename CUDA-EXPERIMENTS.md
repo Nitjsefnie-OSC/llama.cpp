@@ -1073,3 +1073,17 @@ The separate traced run does not show a speed win: summed kernel time29.160ms/to
 Strict actual-service growth512/4096/16384/512 and atomic four-slot checks both passed exact request/token/content and the unchanged probability tolerance. Artifacts: cuda-gdn-indexed-state-growth-correctness.jsonl and cuda-gdn-indexed-state-atomic-correctness.jsonl. Inspected idle diagnostic PID14644 was then stopped, ending the Nsight launch parent with4294967295/tool1 as expected for intentional target termination; capture start/benchmark/stop had already exited0. No profiler process remains.
 
 Restored all11 accepted snapshot hashes and started fresh uninstrumented baseline PID19440 under the same production parameters. Separate conditioning plus three measured requests per length are running. Neither candidate acceptance nor a third win is claimed.
+
+
+## 032 - direct PQ2 block indexing hypothesis
+
+Independent read-only discovery identified repeated signed chunk division/remainder in retained ordinary and fused PQ2 SASS. Proposed narrow change: constant part=threadIdx.x%4; iterate block=threadIdx.x/4 with stride8 up to ncols/QK_PQ2_0, preserving dot calls and accumulation order. Discovery checked identical (block,part) sequences for every lane across whole-block K128..65536. No weight layout, codec, row grouping, load policy or unroll-policy change is intended.
+
+Static gate before runtime: at least six fewer dynamic address-generation instructions per logical chunk; unchanged load/DP4A counts and arithmetic order; zero spills; registers no higher than retained ordinary42/fused37; unchanged loop expansion and launch geometry. Reject if those requirements fail. Family share21.471ms/token means a2% end-to-end gain needs approximately0.575ms, or2.7% of that family. A nominal4-7% loop-instruction reduction makes that plausible only if instruction/address issue matters; traffic is unchanged, confidence in an actual gain is low. Prior019/029 failures explicitly argue against equating smaller SASS with throughput.
+
+Source preparation will be isolated while030 service testing runs. No032 compilation or GPU workload may overlap throughput measurements. Runtime acceptance remains strict PQ2 CPU references, service correctness and repeated uninstrumented service pairs with>=2% output gain at both512/4096 and<=2% ingest regression. If030 is accepted,032 must be compared against the newly retained030 binary, not the older baseline.
+
+
+### 032 source prepared and independently reviewed
+
+The isolated patch cuda-pq2-block-index-source.patch has SHA256fae10244959201334c0041626e42d73f822376a37e9987f560c4cf6dc2d96823 and changes only the requested loop (+2/-3 lines). Author and independent reviewer each verified16,384 lane/K combinations, including tails, and unchanged remaining source bytes. Source gate passed. The compiled gate remains unchanged: at least six fewer dynamic address instructions per chunk (12 per paired ordinary iteration), retained loop expansion/load widths/ordered arithmetic, registers<=42/37, zero stack/local/spills and unchanged32x4 geometry. No032 compilation/GPU work occurred during030 service measurements; patch integration waits for030 outcome.
