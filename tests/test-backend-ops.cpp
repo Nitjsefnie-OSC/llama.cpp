@@ -6614,6 +6614,46 @@ struct test_mul_mat_vec_fusion : public test_case {
     }
 };
 
+// Whole-graph CPU-reference coverage for the narrow Bonsai prefill epilogue.
+// Separate selector keeps the production-size cases out of small fusion test selections.
+struct test_pq2_staged_ffn : public test_mul_mat_vec_fusion {
+    const std::string variant;
+
+    test_pq2_staged_ffn(int64_t tokens, int64_t width = 5120, const char * variant = "plain")
+        : test_mul_mat_vec_fusion(GGML_TYPE_PQ2_0, GGML_GLU_OP_SWIGLU, tokens, 17408, width,
+                                 false, 1, 1, false, false, true, false, {1, 1}), variant(variant) {}
+
+    std::string op_desc(ggml_tensor *) override { return "PQ2_STAGED_FFN"; }
+    std::string vars() override { return VARS_TO_STR4(m, n, k, variant); }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k + (variant == "strided" ? 128 : 0), m);
+        if (variant == "strided") {
+            x = ggml_view_2d(ctx, x, k, m, x->nb[1], 0);
+        }
+        ggml_tensor * gate_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_PQ2_0, k, n);
+        ggml_tensor * up_weight   = ggml_new_tensor_2d(ctx, GGML_TYPE_PQ2_0, k, n);
+        ggml_tensor * gate = ggml_mul_mat(ctx, gate_weight, x);
+        ggml_tensor * up   = ggml_mul_mat(ctx, up_weight, x);
+        if (variant == "reverse" && mode == MODE_TEST && gf != nullptr) {
+            // Only correctness needs forced ordering; perf constructs a separate graph later.
+            // Force gate to precede up even though the GLU inputs are reversed.
+            ggml_build_forward_expand(gf, gate);
+        }
+        ggml_tensor * out = variant == "reverse" ? ggml_swiglu_split(ctx, up, gate) : ggml_swiglu_split(ctx, gate, up);
+        if (variant == "extra_consumer") {
+            out = ggml_add(ctx, out, gate);
+        }
+        ggml_set_name(out, "out");
+        return out;
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx, ggml_context * ctx_weights) override {
+        GGML_UNUSED(ctx_weights);
+        return build_graph(ctx);
+    }
+};
+
 // GGML_OP_SUM
 struct test_sum : public test_case {
     const ggml_type type;
@@ -9312,6 +9352,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_mul_mat_vec_fusion(GGML_TYPE_PQ2_0, op, 1, 17408, 5120,
                 false, 1, 1, false, bias, true, false, {1, 1}));
         }
+    }
+
+    for (int64_t tokens : {508, 512, 507, 513}) {
+        test_cases.emplace_back(new test_pq2_staged_ffn(tokens));
+    }
+    test_cases.emplace_back(new test_pq2_staged_ffn(508, 4096));
+    for (const char * variant : {"reverse", "extra_consumer", "strided"}) {
+        test_cases.emplace_back(new test_pq2_staged_ffn(508, 5120, variant));
     }
 
     // PTQ1_0 / PQ2_0 integer-dot mat-vec: Bonsai-2 shapes, odd row counts (row tail), batches and multi-column B

@@ -733,3 +733,63 @@ The full-K loop starts0, increments2 and exits40; SiLU/gate multiplication follo
 ### Sequential growth correctness mode added
 
 The canonical checker now supports --growth-only for the unchanged512/4096/16384/512 sequence. This separates allocator/growth correctness from the previously demonstrated HTTP-admission confound; atomic four-slot checks remain a separate gate. It accepts passing full8-case or explicitly marked4-case growth references, rejects incomplete/incompatible references and conflicting modes, and keeps exact request/token/content comparisons plus the1e-4 probability tolerance. All28 CPU tests pass, including22 existing cases; independent spec/quality review passed. No HTTP or GPU calls occurred during the tool tests.
+
+
+### 026 first candidate throughput trial did not pass
+
+Candidate A (`cuda-service-staged-ffn-candidate-a.jsonl`, PID25564, monitor91419) completed exit0. Comparator passed all8 exact request/token/content pairs and returned exit1 for the performance gate. 512 ingest400.237/output34.584 tok/s, wall8.6990s: -5.860% ingest/-0.827% output versus control A. 4096 ingest509.359/output32.595, wall15.8685s: -0.597%/-1.211%. Evidence: `cuda-service-staged-ffn-comparison-a.json`. No win is claimed.
+
+Thermal conditions differed: control A began at39 C and ended83 C; candidate A began55 C and ended85 C, with measured candidate samples at somewhat lower SM clocks. This is a recorded confound, not proof that temperature caused the difference. Strict diagnostic growth/atomic correctness comes next. Any close performance conclusion requires repeat controls under comparable warmed conditions; thresholds remain unchanged.
+
+
+### 026 strict service correctness and live dispatch passed
+
+`cuda-staged-ffn-growth-correctness.jsonl` passed512/4096/16384/512 against retained reference with exact requests/tokens/content and unchanged1e-4 probability tolerance, including repeated512 consistency. `cuda-staged-ffn-atomic-correctness.jsonl` passed allfour slots; its execute-width sequence exactly matches the controlled atomic reference. Logs show1680 successful staged host submissions:160 at508 and1520 at512. Every submission maps to an eligible non-overlapping candidate. Evidence: `cuda-staged-ffn-dispatch-and-atomic-proof.json`.
+
+Graph diagnostics show125 executions, including13 prefill and52 decode replays, six captures, three instantiations, six updates and three evictions. This is functional/capture evidence, not speed acceptance (`cuda-staged-ffn-growth-graph-summary.json`).
+
+### 026 warmed repeat protocol before further timing
+
+To resolve the first pair's temperature difference, each fresh process gets the same additional unscored four-request conditioning pass: existing benchmark,512/4096 prompts,256 outputs,reps1. Immediately afterward run the normal eight-request benchmark with its own warmup and three measured repetitions. Preserve conditioning artifacts separately and exclude them from acceptance medians. First order is candidate B then retained control B. If that pair is promising, mirror the order for another pair; otherwise reject without claiming the initial difference was temperature-caused. Thresholds remain >=2% ingest at both lengths and <=2% output regression. Both diagnostics and other GPU work remain off during timing.
+
+
+### MMQ register-pressure follow-up rejected before implementation
+
+Read-only source/SASS analysis attributes part of retained254-register pressure to64 persistent FP32 accumulators,32 A-fragment registers plus16 scales, and18 registers prefetching the next Q8 half-tile while computing the current half. Concrete retained SASS lifetimes include A fragment R96-R99 from0x2160 through0x53f0, and prefetched R158 from0x22e0 through0x5770. This is not an exact partition of all registers.
+
+A K-major source loop might shrink A/scale live storage while preserving accumulation order, but would constrain compiler scheduling/add loop control. With no spills and57856 bytes shared per CTA, register reduction alone still leaves one CTA per SM. No credible positive service-gain prediction was established, so no code/build/performance trial is scheduled for this hypothesis. Existing retained SASS artifact: `cuda-prefill-staged-ffn-sass-retained-selected-complete.txt`.
+
+
+### 026 warmed candidate B completed; retained control B running
+
+Candidate B completed exit 0 with conditioning and measured artifacts kept separately: `cuda-service-staged-ffn-candidate-conditioning-b.jsonl` and `cuda-service-staged-ffn-candidate-b.jsonl`. Measured medians: 512 ingest 389.256 / output 34.867 tok/s, wall 8.6316 s; 4096 ingest 505.964 / output 32.718, wall 15.8931 s. These are candidate observations, not an accepted gain. The matching warmed retained control B is now running on actual service PID 23724 with the identical request protocol and diagnostics off. The accepted snapshot's CUDA DLL hash was verified before deployment; runner deployment preserves the previous candidate folder for rollback.
+
+### 027 preregistration: prune unused CUDA weight-format instantiations
+
+Read-only model inventory found 353 F32, 96 BF16 and 402 PQ2_0 tensors, with Q4_0 K/V caches. Prepare optional GGML_CUDA_BONSAI_ONLY, default OFF, retaining PQ2_0/Q4_0 MMQ and MMVQ weight instantiations plus all F32/F16/BF16, Q8_1 activation, attention, conversion, GDN and control paths. Exclude 22 unused MMQ translation units and corresponding MMQ/MMVQ dispatch branches; advertise only supported matrix weight types when opted in. This is a bounded test of the user's code-pruning hypothesis.
+
+Prediction: lower build time and CUDA binary/device-code section size; low confidence in VRAM or throughput benefit because CUDA lazy loading may already omit unused kernels from resident device code. A smaller DLL alone will not count as a memory or speed win. Before service timing, require omitted functions absent from SM86 device code and retained PQ2 SASS/resources unchanged, then CPU-reference and strict service growth/atomic correctness. Compare memory only after matched initialization and shape warmup with equal tensor/pool allocations. Speed acceptance requires repeated actual-service pairs showing at least 2% improvement on the target phase at both prompt sizes with no more than 2% regression in the other phase; exact outputs remain mandatory. Source preparation runs in an isolated worktree without compilation or GPU activity during experiment 026 timing.
+
+
+### 026 rejected after warmed service comparison
+
+Retained control B completed exit 0; all eight corresponding requests, generated tokens and content match candidate B. The comparator returned exit 1 specifically for the performance gate (`cuda-service-staged-ffn-comparison-b.json`). Results exclude both conditioning and normal warmups:
+
+| Prompt | Retained ingest | Candidate ingest | Change | Retained output | Candidate output | Change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 406.756 | 389.256 | -4.302% | 34.727 | 34.867 | +0.402% |
+| 4096 | 510.065 | 505.964 | -0.804% | 32.575 | 32.718 | +0.438% |
+
+Wall medians regressed 0.316% and 0.403%. Candidate measured samples began at 73-74 C and ended at 83-86 C; control began at 71-75 C and ended at 82-86 C. Conditions are closer than pair A, but this is not proof of equal instantaneous clocks throughout each request. Neither pair meets the preregistered ingest gate. Reject without further repeats or a win claim.
+
+The exact v3 patch was reversed for the three CUDA files only, then git diff confirmed they equal retained HEAD. Candidate source, binaries, SASS, diagnostics and all benchmark artifacts remain preserved. The eight whole-graph PQ2 reference cases remain useful coverage: all 8/8 passed again using the candidate test executable isolated from candidate DLLs and the accepted lazy-reserve DLLs on PATH (`cuda-staged-ffn-retained-reference.stdout.txt` and stderr). The first attempt asserted an incorrect bin/Release executable path before creating artifacts or starting a test; the canonical Ninja build script established bin/test-backend-ops.exe, and the corrected run exited 0.
+
+All 11 stable deployed files match the accepted snapshot hashes. The original supervisor was restored byte-for-byte to SHA256 54af3284fda7d5a446f5df8c7a82121444576fff96283d7eea21dbf7362142be; the maintenance prefix remains in `cuda-maintenance/llama-supervisor.maintenance-before-restore-026.ps1`. The ordinary scheduled service is healthy on port 8090, PID 5320, with four slots and context 188416. Its permanent Prism launcher retains LLAMA_LAZY_COMPUTE_RESERVE=1. There are still two validated optimization wins.
+
+### Partial decode unroll follow-up rejected before implementation
+
+Retained fused K5120 SASS executes five iterations of 138 instructions; only three per iteration are explicit loop control (increment 0x3e0, compare 0x3f0, backedge 0x9e0). An ideal factor-two loop with a peeled tail saves nine of 690 loop instructions, about 1.3% of loop issue count before unaffected reduction, epilogue and other decode work. This is not a latency bound. All 19 loads per iteration already precede dot arithmetic, and partial unrolling exposes more values to the load-hoisting behavior observed in 025. Retained 37 registers leave three before crossing the 40-register allocation tier; 41-48 registers infer 40 rather than 48 resident SM86 warps. No credible >=2% service-output prediction was established, so no implementation/build/runtime test is scheduled. Evidence: `cuda-pq2-k5120-retained-sass-resources-complete.txt`, `cuda-pq2-k5120-sass-comparison.json`, preserved 025 patch, and mmvq.cu/vecdotq.cuh source.
+
+### 027 source prepared for independent review
+
+The five-file optional Bonsai-only candidate is preserved at `cuda-bonsai-only-source.patch`, SHA256 5b8e54691f63603a6eda895602f9ff9cacb87c70d998a47086405fade0ced89f. Author source checks report exactly two retained MMQ translation units, aligned MMQ/MMVQ guards and default-OFF token equivalence. These are source checks, not a successful build. Independent review is running before integration or compilation. For clarity before measurement, the primary service gate for this memory-headroom hypothesis is >=2% output gain at both prompt lengths with <=2% ingest regression; gains in DLL size alone cannot satisfy it.
