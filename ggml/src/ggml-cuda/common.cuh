@@ -1269,6 +1269,28 @@ struct ggml_tensor_extra_gpu {
 #define USE_CUDA_GRAPH
 #endif
 
+#ifdef USE_CUDA_GRAPH
+inline bool ggml_cuda_graph_stats_enabled() {
+    static const bool enabled = [] {
+        const char * value = std::getenv("DEBUG_CUDA_GRAPH_STATS");
+        return value && std::atoi(value) != 0;
+    }();
+    return enabled;
+}
+
+// Host timings only: no CUDA events/synchronization, and graph replay remains enabled.
+// tokens=0 means no quantized MUL_MAT was found; node=-1 means no individual node applies.
+// A cache miss has uid=0 until the caller binds the new entry to a graph.
+inline void ggml_cuda_graph_stats_log(const char * event, int device, const void * key, uint64_t uid,
+                                     int64_t host_us = 0, int64_t idle_us = 0, int64_t tokens = 0,
+                                     const char * mode = "-", const char * reason = "-", int node = -1) {
+    GGML_LOG_INFO("CUDA_GRAPH_STATS,event=%s,time_us=%lld,device=%d,key=%p,uid=%llu,host_us=%lld,idle_us=%lld,"
+                  "tokens=%lld,mode=%s,reason=%s,node=%d\n",
+                  event, (long long) ggml_time_us(), device, key, (unsigned long long) uid, (long long) host_us,
+                  (long long) idle_us, (long long) tokens, mode, reason, node);
+}
+#endif
+
 struct ggml_cuda_graph {
 #ifdef USE_CUDA_GRAPH
     ~ggml_cuda_graph() {
@@ -1287,6 +1309,7 @@ struct ggml_cuda_graph {
     bool warmup_complete = false;
     uint64_t uid = 0;
     int64_t last_used_time = 0;
+    int64_t stats_capture_start_us = 0;
     struct node_properties {
         ggml_tensor node;
         void *   node_src_data_ptrs[GGML_MAX_SRC];
@@ -1480,7 +1503,17 @@ struct ggml_backend_cuda_context {
             last_graph_eviction_sweep = time_now;
             for (auto it = cuda_graphs.begin(); it != cuda_graphs.end(); ) {
                 if (time_now - it->second->last_used_time >= 10'000'000) {
-                    it = cuda_graphs.erase(it);
+                    if (ggml_cuda_graph_stats_enabled()) {
+                        const void * key = it->first;
+                        const uint64_t uid = it->second->uid;
+                        const int64_t idle_us = time_now - it->second->last_used_time;
+                        const int64_t start_us = ggml_time_us();
+                        it = cuda_graphs.erase(it);
+                        ggml_cuda_graph_stats_log("evict", device, key, uid, ggml_time_us() - start_us, idle_us,
+                                                  0, "-", "idle_timeout");
+                    } else {
+                        it = cuda_graphs.erase(it);
+                    }
                 } else {
                     ++it;
                 }
@@ -1490,6 +1523,9 @@ struct ggml_backend_cuda_context {
         auto it = cuda_graphs.find(first_node_ptr);
         if (it == cuda_graphs.end()) {
             it = cuda_graphs.emplace(first_node_ptr, std::make_unique<ggml_cuda_graph>()).first;
+            if (ggml_cuda_graph_stats_enabled()) {
+                ggml_cuda_graph_stats_log("miss", device, first_node_ptr, it->second->uid);
+            }
         }
         it->second->last_used_time = time_now;
         return it->second.get();

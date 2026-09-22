@@ -2610,6 +2610,10 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
     if ((int)graph->node_props.size() != cgraph->n_nodes) {
         res = true;
         graph->node_props.resize(cgraph->n_nodes);
+        if (ggml_cuda_graph_stats_enabled()) {
+            ggml_cuda_graph_stats_log("change", cuda_ctx->device, graph_key, graph->uid,
+                                      0, 0, 0, "-", "node_count");
+        }
     }
 
     for (int i = 0; i < cgraph->n_nodes; i++) {
@@ -2625,6 +2629,11 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
         }
 
         if (res || memcmp(&graph->node_props[i], &prop, sizeof(prop)) != 0) {
+            if (!res && ggml_cuda_graph_stats_enabled()) {
+                // Report only the first mismatch; do not dump tensor contents.
+                ggml_cuda_graph_stats_log("change", cuda_ctx->device, graph_key, graph->uid,
+                                          0, 0, 0, "-", "node_properties", i);
+            }
             graph->node_props[i] = prop;
             res = true;
         }
@@ -2635,6 +2644,8 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
 
 static void ggml_cuda_graph_update_executable(ggml_backend_cuda_context * cuda_ctx, const void * graph_key) {
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
+    const bool stats = ggml_cuda_graph_stats_enabled();
+    const int64_t start_us = stats ? ggml_time_us() : 0;
 
 #if CUDART_VERSION >= 12000
     cudaGraphExecUpdateResultInfo result_info;
@@ -2645,6 +2656,11 @@ static void ggml_cuda_graph_update_executable(ggml_backend_cuda_context * cuda_c
     cudaError_t stat = cudaGraphExecUpdate(graph->instance, graph->graph, &errorNode, &result_info);
 #endif // CUDART_VERSION >= 12000
 
+    if (stats) {
+        ggml_cuda_graph_stats_log("update", cuda_ctx->device, graph_key, graph->uid,
+                                  ggml_time_us() - start_us, 0, 0, "-",
+                                  stat == cudaSuccess ? "success" : "failure");
+    }
     if (stat == cudaErrorGraphExecUpdateFailure) {
 #ifndef NDEBUG
         GGML_LOG_DEBUG("%s: CUDA graph update failed\n", __func__);
@@ -2653,9 +2669,14 @@ static void ggml_cuda_graph_update_executable(ggml_backend_cuda_context * cuda_c
         // The pre-existing graph exec cannot be updated due to violated constraints
         // so instead clear error and re-instantiate
         (void)cudaGetLastError();
+        const int64_t replace_start_us = stats ? ggml_time_us() : 0;
         CUDA_CHECK(cudaGraphExecDestroy(graph->instance));
         graph->instance = nullptr;
         CUDA_CHECK(cudaGraphInstantiate(&graph->instance, graph->graph, NULL, NULL, 0));
+        if (stats) {
+            ggml_cuda_graph_stats_log("instantiate", cuda_ctx->device, graph_key, graph->uid,
+                                      ggml_time_us() - replace_start_us, 0, 0, "-", "replace_failed_update");
+        }
     } else {
         GGML_ASSERT(stat == cudaSuccess);
     }
@@ -4480,6 +4501,10 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
             }
 
             CUDA_CHECK(cudaStreamEndCapture(cuda_ctx->stream(), &graph->graph));
+            if (ggml_cuda_graph_stats_enabled()) {
+                ggml_cuda_graph_stats_log("capture", cuda_ctx->device, graph_key, graph->uid,
+                                          ggml_time_us() - graph->stats_capture_start_us);
+            }
             graph_evaluated_or_captured = true; // CUDA graph has been captured
 
             std::lock_guard<std::mutex> lock(ggml_cuda_lock);
@@ -4494,7 +4519,13 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
     if (use_cuda_graph) {
         ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
         if (graph->instance == nullptr) { // Create executable graph from captured graph.
+            const bool stats = ggml_cuda_graph_stats_enabled();
+            const int64_t start_us = stats ? ggml_time_us() : 0;
             CUDA_CHECK(cudaGraphInstantiate(&graph->instance, graph->graph, NULL, NULL, 0));
+            if (stats) {
+                ggml_cuda_graph_stats_log("instantiate", cuda_ctx->device, graph_key, graph->uid,
+                                          ggml_time_us() - start_us, 0, 0, "-", "first_instance");
+            }
         }
         if (cuda_graph_update_required) { // Update graph executable
             ggml_cuda_graph_update_executable(cuda_ctx, graph_key);
@@ -4541,15 +4572,26 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     const void * graph_key = nullptr;
 
 #ifdef USE_CUDA_GRAPH
+    const bool stats = ggml_cuda_graph_stats_enabled();
+    const char * stats_reason = "disabled";
     graph_key = ggml_cuda_graph_get_key(cgraph);
 
     ggml_cuda_graph_set_enabled(cuda_ctx, graph_key);
 
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
+    if (stats && ggml_cuda_timing_enabled()) {
+        stats_reason = "timing_enabled";
+    }
     if (!ggml_cuda_timing_enabled() && graph->is_enabled()) {
         const bool graph_compatible = ggml_cuda_graph_check_compability(cgraph);
+        if (stats) {
+            stats_reason = "incompatible";
+        }
         if (graph_compatible) {
             const bool properties_changed = ggml_cuda_graph_update_required(cuda_ctx, cgraph);
+            if (stats) {
+                stats_reason = properties_changed ? "properties_changed" : "stable";
+            }
 
             if (!graph->warmup_complete) {
                 // Warmup: need at least 2 calls with no property change on the 2nd call
@@ -4558,6 +4600,9 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
                     GGML_LOG_DEBUG("%s: CUDA graph warmup complete\n", __func__);
                     use_cuda_graph = true;
                     cuda_graph_update_required = true;
+                    if (stats) {
+                        stats_reason = "warmup_complete";
+                    }
                 }
                 // else: properties changed or first call - execute directly (use_cuda_graph stays false)
             } else {
@@ -4565,6 +4610,9 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
                 if (properties_changed) {
                     // Properties changed - reset warmup, execute directly until stable again
                     graph->warmup_complete = false;
+                    if (stats) {
+                        stats_reason = "warmup_reset";
+                    }
                     GGML_LOG_DEBUG("%s: CUDA graph warmup reset\n", __func__);
                 } else {
                     use_cuda_graph = true;
@@ -4573,9 +4621,28 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
             }
         }
     }
+    if (stats) {
+        // Quantized projection widths avoid classifying auxiliary F32 Hadamard
+        // MUL_MATs as prefill. Zero explicitly leaves unsupported graphs unknown.
+        int64_t tokens = 0;
+        for (int i = 0; i < cgraph->n_nodes; ++i) {
+            const ggml_tensor * node = cgraph->nodes[i];
+            if (node->op == GGML_OP_MUL_MAT && node->src[0] && ggml_is_quantized(node->src[0]->type)) {
+                tokens = std::max(tokens, node->ne[1]);
+            }
+        }
+        ggml_cuda_graph_stats_log("execute", cuda_ctx->device, graph_key, cgraph->uid,
+                                  0, 0, tokens, !use_cuda_graph ? "direct" :
+                                  (cuda_graph_update_required ? "capture" : "replay"), stats_reason);
+    }
 #endif // USE_CUDA_GRAPH
 
     if (use_cuda_graph && cuda_graph_update_required) {
+#ifdef USE_CUDA_GRAPH
+        if (stats) {
+            graph->stats_capture_start_us = ggml_time_us();
+        }
+#endif
         // Start CUDA graph capture
         {
             std::lock_guard<std::mutex> lock(ggml_cuda_lock);

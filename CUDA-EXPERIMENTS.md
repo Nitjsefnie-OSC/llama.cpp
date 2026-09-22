@@ -461,3 +461,59 @@ Operational correction: the benchmark file completed around 19:04 on September 2
 ### Experiment 020 / 021: next build prepared
 
 Applied the independently reviewed prefill-only four-column GDN patch and its eight reference test cases. Also applied the reviewed graph diagnostics and runner support; both diagnostic flags stay off for throughput acceptance. Graph diagnostics source review found no added CUDA API calls, events or synchronization and no changed graph decisions. Runner validation passed 23 mock cases across PowerShell 5.1 and 7.6, including restoration and conflicting log-mode checks. The next build excludes rejected experiment 019.
+
+### Experiment 020 / 021: build and reference tests passed
+
+The combined build completed successfully (`cuda-build-gdn-cols4-prefill-graph-stats.txt`). With both diagnostics disabled, CPU-reference checks passed 47/47 GATED_DELTA_NET, 101/101 PQ2 MUL_MAT and 40/40 PQ2 fusion cases. Each command exited zero with nonzero counts. Logs: `cuda-gdn-cols4-prefill-{gdn,mulmat,fusion}.{stdout,stderr}.txt`. The 14-file snapshot `tools/llamacpp-cuda-gdn-cols4-prefill` was SHA256-verified against build output. The normal service benchmark follows with all diagnostic flags disabled; runtime validation of enabled graph logging is separate.
+
+### Experiment 020: first service trial fails; attribution unresolved
+
+`cuda-service-gdn-cols4-prefill-a.jsonl` completed with exit zero and eight matching requests/generated token sequences. Diagnostics were disabled. Medians:
+
+| Prompt | Ingest tok/s | Output tok/s | Total seconds |
+|---|---:|---:|---:|
+| 512 | 228.415 | 24.469 | 12.8134 |
+| 4096 | 296.339 | 26.949 | 23.6085 |
+
+This fails acceptance by a wide margin. Offline comparison confirms that both PQ2 decode kernels and the scalar S128 RAW COLS1 GDN kernels have exactly the baseline instruction mnemonic/operand sequences and register/local/stack counts. Binary encodings and scheduling-control bits were not compared. Four-column prefill variants exist with 72 registers and no spills.
+
+During the slow run, an nvidia-smi sample showed SM 1890 MHz, memory 7301 MHz, GPU utilization 99%, memory utilization 13%, power 104.67 W and only 87 MiB reported free. Previous fast runs drew about 169 W at lower SM clocks. Per-process allocation counters were about 12.081 GB dedicated / 402.65 MB shared, versus 12.117 GB / 367.00 MB in the earlier control. These observations suggest a stall but do not prove paging or identify a cause. No unrelated application was stopped or changed. The retained binary is restored for a fresh control before attributing this slowdown to the source change.
+
+### Fresh retained-control D under current conditions
+
+`cuda-service-warp-scale-stablepath-d.jsonl` completed successfully with eight matching requests/tokens. Medians: 512 ingest 413.987 / output 32.123 tok/s, wall 9.1940s; 4096 ingest 498.872 / output 30.505, wall 16.6362s. The same retained binary previously produced 35.827/33.639 output tok/s in affinity control A2. Current conditions therefore also affect the retained control; candidate 020 remains unaccepted and its larger slowdown is still unexplained.
+
+A separate Windows counter snapshot reported dedicated allocations of 11491.6 MiB for llama-server, 1205.0 MiB for DWM and 1009.4 MiB for NVIDIA Overlay, plus smaller applications. These counters are not a measurement of uniquely resident physical pages and must not simply be summed to infer paging. No unrelated process was stopped.
+
+### Experiment 022: lower microbatch to test memory headroom — preregistration
+
+The retained-control startup log reports model 6539.67 MiB, KV 3312.00 MiB, recurrent state 598.50 MiB and a 1010.28 MiB CUDA compute arena, before additional scratch-pool capacity. Source inspection shows the arena does not shrink for smaller decode graphs, while the VMM scratch pool retains its mapped high-water capacity until context destruction. Actual unused bytes remain unknown.
+
+Test the retained binary with only microbatch lowered from 512 to 256. Keep batch 512, context 188416, automatic four slots, q4 KV, model and sampling unchanged. This preserves advertised context and slot capacity. Hypothesis: smaller reserved workspace provides enough headroom to improve output and stabilize ingestion. Compare exact service requests/tokens and GPU allocation counters against fresh control D. Require at least 5% output improvement without more than 2% ingest regression before retaining this configuration; otherwise record the tradeoff and reject or test a separate setting. This is a configuration experiment, not a claimed kernel speedup.
+
+
+### 022 result: microbatch 256 rejected (2026-09-22)
+
+Actual service run `cuda-service-warp-scale-ub256-a.jsonl`, PID 13800, monitor 18389, exited 0. Started 21:09:48 CEST and completed 21:11:55, 127 seconds. Eight of eight full request/generated-token pairs match fresh retained control D.
+
+- 512 tokens: ingest 384.502 tok/s (-7.12%); output 33.758 tok/s (+5.09%); wall 8.8766s.
+- 4096 tokens: ingest 503.004 tok/s (+0.83%); output 31.679 tok/s (+3.85%); wall 16.1292s.
+
+The >=5% output/no >2% ingest-regression gate failed. Default UBatch remains 512. GPU allocation counters ended about 244 MiB lower; allocation counters alone do not establish physical residency or paging.
+
+### 023 preregistration: lazy compute reservation
+
+Source attribution from CUDA FA allocation: full-context FP16 K conversion 368 MiB + V conversion 368 MiB + F16 mask 184 MiB account for 920 MiB of the logged 1010.28 MiB compute arena. These are separate from persistent KV memory. Actual short-context views already shrink, but allocator capacity only grows. Candidate: opt-in split-only worst-case reservations, then synchronized allocation of actual graphs, preserving context 188416, automatic four slots, batch/ubatch 512, quantized KV, and logits features. Expected benefit: lower short-context arena allocation and potentially >=5% service ingest or output improvement, with no >2% regression in either. No throughput gain is assumed from the memory estimate. Runtime gates include graph recapture after growth, deterministic token agreement, four-slot/logits coverage and allocation-error-path review. Default must remain unchanged.
+
+### 021 runtime diagnostic check started
+
+Launching the existing prefill-only candidate snapshot with DEBUG_CUDA_GRAPH_STATS enabled and DEBUG_CUDA_TIMING cleared. This run validates instrumentation, not speed acceptance. Use 512/4096 token prompts, 32 generated tokens, one warmup and one measured round; require actual graph replay, valid parser output, and token-prefix agreement.
+
+
+### 021 runtime validation passed; 020 source reset
+
+The enabled graph diagnostic service run `cuda-service-graph-stats-a-requests.jsonl` exited zero and all four 32-token outputs match retained-control prefixes. Parser output `cuda-service-graph-stats-a-summary.json`: 148 executions, including 116 decode replays, 4 decode captures, 4 direct decodes; 23 direct prefills and 1 captured prefill. Five captures cost 30.751 ms host time total, two instantiations 11.421 ms, five updates 2.991 ms and two evictions 2.108 ms. Observed evicted ages were 53.374 and 53.156 seconds. This validates real replay and eviction logging without the timing mode that disables replay. Eight parser tests passed.
+
+One diagnostic 4K request decoded at 12.30 tok/s despite normal earlier requests. Summed host lifecycle time across the entire run is only 47.271 ms, so the measured graph lifecycle costs do not explain that seconds-scale slowdown. This is diagnostic evidence, not a controlled performance acceptance run.
+
+Experiment 020 source was reversed exactly using its preserved patch, with git diff proving gated_delta_net.cu equals retained HEAD. Its candidate snapshot and source patch remain available. Additional GDN reference cases are retained for validation; experiment 023 will isolate allocation changes from the failed GDN kernel specialization.
