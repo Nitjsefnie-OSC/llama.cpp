@@ -1129,3 +1129,17 @@ Independent assembly review found ordinary registers42->46 and fused37->43, both
 The compiler retained weight pointers across iterations; fused maintenance of four scale/payload pointers offset most address savings and increased live state. Fused43 registers cross the40-register allocation tier. This is a static resource failure, not a measured throughput regression. Reject without any032GPU/reference/service run, preserving the predeclared gate. Full baseline/candidate SASS with command/hash metadata, comparison and instruction-level gate evidence are cuda-pq2-block-index-sass-*.txt/json and cuda-pq2-block-index-static-gates.json.
 
 Reversed the exact032source patch and verified mmvq.cu equals retainedHEAD. Preserved patch, snapshot, build logs and disassembly evidence. Normal service remains on accepted030; still three validated wins.
+
+
+## 033 - unsigned PQ2 chunk arithmetic, compile-only hypothesis first
+
+Keep the original chunk loop and index structure, but use uint32_t for chunks/chunk/block/part, unsigned division/remainder constants and stride32u. Leave helper signatures, dot calls, accumulation, unroll policy and launch geometry unchanged. Positive whole-block K guarantees identical chunk order and addresses; active helper inputs must remain within their existing signed-int domain.
+
+Independent baselineSASS review identifies potentially6-7 net address-instruction savings/chunk in both kernels: signed quotient/remainder correction and sign-extension/carry/high-half reconstruction for the Q8 address, subtracting necessary unsigned replacement operations. Keeping block unsigned is part of the hypothesis so y+block*4 does not immediately reintroduce signed offset handling. Unlike032, this preserves original chunk induction, but the compiler may still strength-reduce into persistent pointers and raise live state. Confidence remains low; no speed prediction beyond the prior roughly2.7% PQ2-family improvement needed for2% service throughput.
+
+Unchanged static gates: at least six net dynamic address instructions saved per logical chunk in BOTH ordinary/fused, registers<=42/37, zero stack/local/spills, same ordinarypaired/fusedsingle expansion, loadcounts/widths, ordered dot/FP32 arithmetic, tails and32x4 geometry. No register cap or auxiliary tuning. Any failure rejects beforeGPU tests. Only a static pass authorizes runtime references, strict service correctness and repeated uninstrumented service comparisons against accepted030, requiring>=2% output at512/4096 and<=2% ingest regression.032 remains rejected.
+
+
+### 033 source candidate prepared
+
+Patch cuda-pq2-unsigned-index-source.patch SHA256192069d4ad5b3c7737f5f27578bad5d2a950be1021fdcc694f4f8b421cbdeabd changes only four loop-index lines (+4/-3), with all other mmvq.cu bytes unchanged. Author verified16,384 lane/K ordered sequences and6,303,744 pointer/index comparisons including padded strides and boundary rows within the existing signed helper-index domain. Existing dispatch whole-block assertion and only two kernel launches remain. Diffcheck passed; independent source review pending. No033compilation orGPUtest yet.
