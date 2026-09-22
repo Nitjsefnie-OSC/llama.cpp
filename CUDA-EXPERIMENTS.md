@@ -517,3 +517,21 @@ The enabled graph diagnostic service run `cuda-service-graph-stats-a-requests.js
 One diagnostic 4K request decoded at 12.30 tok/s despite normal earlier requests. Summed host lifecycle time across the entire run is only 47.271 ms, so the measured graph lifecycle costs do not explain that seconds-scale slowdown. This is diagnostic evidence, not a controlled performance acceptance run.
 
 Experiment 020 source was reversed exactly using its preserved patch, with git diff proving gated_delta_net.cu equals retained HEAD. Its candidate snapshot and source patch remain available. Additional GDN reference cases are retained for validation; experiment 023 will isolate allocation changes from the failed GDN kernel specialization.
+
+
+### 023 implementation and review gate
+
+The lazy reservation patch and separate allocation-failure correction passed independent review for the target CUDA-plus-CPU scheduler path. Real scheduler/allocator CPU regression reproduced stock initial allocation access violation and growth assertion termination, plus a guard-only retry crash. Recreating failed allocation metadata and resetting the context graph yielded six passing success/failure/retry checks. Artifacts: `lazy-reserve-cpu-7p_289gy/guarded-recovery-results.json`; source patches `ggml-scheduler-allocation-failure-source.patch` and `cuda-lazy-compute-reserve-source.patch`. Partial allocation before a later backend failure and full context recovery remain uncovered. No claim is made about the pre-existing single-backend growth synchronization path.
+
+Added an actual-service growth checker (512,4096,16384,512 plus four concurrent slots; 16 output tokens and top-five log probabilities). Independent review found intermediate /slots exchanges were not retained; v2 fixes correlated full exchange/error logging and preserves completion artifacts once. Twelve mock tests pass. The original baseline run was already running; its full completion responses remain suitable as correctness reference if it passes.
+
+User-proposed next hypothesis: compile out irrelevant quantization kernels. Existing build already uses only SM86 and disables most flash-attention quantization variants. The retained CUDA DLL is 129337344 bytes on disk, which is not a GPU residency measurement. Bounded discovery is underway to retain exactly the model/cache/activation types required before creating an isolated build comparison.
+
+
+### 023 build/reference gates passed; enabled service test started
+
+The canonical CUDA build completed exit 0 (`cuda-build-lazy-compute-reserve.txt`). Integrated CPU allocation regression passed six checks. CUDA correctness passed 47/47 GDN, 101/101 PQ2 MUL_MAT and 40/40 PQ2 fusion cases with nonzero counts, diagnostics disabled. The 11-file `tools/llamacpp-cuda-lazy-reserve` service snapshot was hash-verified; hashes in `cuda-lazy-reserve-binary-hashes.json`.
+
+Retained-server growth reference completed all eight cases, including exact repeated-512 consistency and four concurrent slots, with full completion tokens/log probabilities preserved in `cuda-lazy-reserve-growth-baseline.jsonl`. During this correctness run, retained prefill fell near 60 tok/s and nvidia-smi showed 59 MiB free; no causal attribution is made.
+
+Starting lazy-reservation-enabled service with graph lifecycle logging for functional comparison and actual growth/replay checks. This diagnostic run is not throughput acceptance. Upstream discovery also found the unchecked reserve result already reported in ggml-org/llama.cpp#27817 and guarded upstream by #26070; Prism lacks that backport. Retry invalidation is a separate local correction, reproduced on this Prism-derived source. No duplicate upstream issue was filed.
