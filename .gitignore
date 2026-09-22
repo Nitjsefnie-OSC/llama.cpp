@@ -16,6 +16,7 @@
 !/CMakePresets.json
 !/CODEOWNERS
 !/CONTRIBUTING.md
+!/CUDA-EXPERIMENTS.md
 !/LICENSE
 !/Makefile
 !/README.md
