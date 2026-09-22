@@ -535,3 +535,10 @@ The canonical CUDA build completed exit 0 (`cuda-build-lazy-compute-reserve.txt`
 Retained-server growth reference completed all eight cases, including exact repeated-512 consistency and four concurrent slots, with full completion tokens/log probabilities preserved in `cuda-lazy-reserve-growth-baseline.jsonl`. During this correctness run, retained prefill fell near 60 tok/s and nvidia-smi showed 59 MiB free; no causal attribution is made.
 
 Starting lazy-reservation-enabled service with graph lifecycle logging for functional comparison and actual growth/replay checks. This diagnostic run is not throughput acceptance. Upstream discovery also found the unchecked reserve result already reported in ggml-org/llama.cpp#27817 and guarded upstream by #26070; Prism lacks that backport. Retry invalidation is a separate local correction, reproduced on this Prism-derived source. No duplicate upstream issue was filed.
+
+
+### 023 enabled growth trial: probability gate failed, candidate not accepted
+
+`cuda-lazy-reserve-growth-enabled-a.jsonl` exited 1. All eight exact requests and generated-token sequences match the retained reference; all four sequential growth cases and concurrent slots 0/1 also pass the strict probability comparison. Concurrent slots 2/3 differ at first-token log probability: -0.04377519 vs -0.03808111, and -0.04053763 vs -0.04424564 (absolute tolerance 1e-4). Do not relax this gate without control evidence. Next compare concurrent reference repeats to distinguish schedule-dependent baseline variation from allocation effects.
+
+Replay diagnostics parsed successfully: 128 executions with 52 decode replays and 12 prefill replays; six captures, three instantiations, six updates, two evictions. Source: `cuda-service-lazy-reserve-graph-a.log` and its summary. A post-start GPU snapshot showed 775 MiB free vs the earlier retained-run 59 MiB snapshot; these are separate observations, not a controlled residency measurement or throughput gain.

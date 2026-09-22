@@ -10,6 +10,7 @@
 !/test-autorelease.cpp
 !/test-backend-ops.cpp
 !/test-backend-sampler.cpp
+!/test-backend-sched-alloc-failure.cpp
 !/test-barrier.cpp
 !/test-batch-alloc.cpp
 !/test-c.c

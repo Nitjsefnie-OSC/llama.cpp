@@ -1585,6 +1585,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
+            // A graph with failed allocation must not pass can_reuse() on retry.
+            res->reset();
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
         }
