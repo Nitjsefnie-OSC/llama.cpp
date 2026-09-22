@@ -929,3 +929,23 @@ Measured steady decode (last 30 replays): summed kernels 26.983 ms/token, device
 The traced measured 508-token prefill has PQ2 MMQ 737.303 ms (64.53%) and GDN 214.330 ms (18.76%); the previously recorded prefill perturbation limits applying these proportions to untraced service timing. First-three GDN outliers remain observed without a paging explanation. Complete evidence: cuda-nsys028-analysis-report.md, results.json, coverage.json, filtered-count-check.json, original SQLite, CSVs and native command outputs. A first filtered report command failed with Time format overflow for a bare large nanosecond component; split seconds/nanoseconds succeeded and both artifacts were preserved.
 
 Next read-only candidate work is narrowly scoped to (a) the active ordinary PQ2 warp register tier and shape specialization, and (b) the source/geometry behind the get_rows_float_vec cost. No new kernel change or speed win is claimed from profiling alone.
+
+
+### 028 recurrent-state gather follow-up scoped, not implemented
+
+Independent source/trace attribution identified exactly 48 vector gathers per token, each copying 786,432 F32 values (3 MiB) from recurrent state. Measured cost is 0.898677 ms/token. Origins are state_predelta in qwen35.cpp and get_state_rows in llama-graph.cpp; GDN subsequently reads that materialized state. The unrelated scalar gathers for convolution history/output selection remain outside this finding.
+
+A direct indexed GDN input could remove up to 288 MiB/token of gather read/write traffic, but existing rows mode requires ring snapshots and changes writeback to SET_ROWS, losing the current CUDA GDN-to-CPY fusion. Any future candidate must keep dynamic device row indices across replay, preserve write fusion, and limit to single-token/single-sequence scalar S128/H48/K1 with no extra-state relocation; graph-builder comments document an overwrite hazard otherwise. Complete elimination would save 3.07% of the traced 29.300 ms latency, an ideal 3.16% throughput ceiling. Actual gain would be smaller. No implementation is scheduled now; prioritize the simpler active ordinary-PQ2 register hypothesis before this state-sensitive multi-file change.
+
+
+## 029 - disable automatic ordinary PQ2 decode unrolling
+
+The actual 028 DLL SHA matches the retained SASS metadata, and ordinary/fused instruction text matches clean 027 OFF output. The active ordinary kernel uses 42 registers and zero local memory, with a compiler-generated peeled first iteration then paired chunk loop: increment 64, 28 global loads before the first DP4A, two sequential accumulation FFMAs. The fused kernel uses 37 registers and one chunk per iteration. This is not the previously rejected explicit unroll proposal; the hypothesis is that compiler-created second-chunk live state crosses a register allocation tier.
+
+Candidate: split the compile-time ordinary/fused loop branches, use literal pragma unroll 1 only on the ordinary loop, and retain fused semantics, reduction/epilogue, dot helper, per-lane arithmetic order, and 128-thread launch geometry. No K specialization or format change. Static gates before GPU correctness: ordinary <=40 registers, zero stack/local/spill instructions, one chunk per iteration with increment32 and unchanged tail/accumulation order, smaller approximately14-load group; fused normalized instructions and37-register resources unchanged. Reject if those gates fail.
+
+SM86 occupancy improvement from40 to48 resident warps is inferred from register allocation, not measured. Conditional service prediction: a4-8% reduction in the15.698ms ordinary kernel share would save0.628-1.256ms/token, about2.2-4.5% output throughput against the traced29.3ms cadence. A2% output gain needs about3.7% improvement in this kernel family. Extra loop instructions or reduced instruction/memory parallelism may cancel the benefit. Acceptance remains repeated uninstrumented actual-service pairs with >=2% output gain at both512/4096 and <=2% ingest regression, exact outputs, plus retained CPU-reference and service growth/atomic correctness.
+
+Source preparation is isolated in experiment/pq2-no-auto-unroll. Normal accepted service remains healthy; no compilation or service test for029 has started.
+
+029 source candidate prepared: one mmvq.cu change, +13/-5 lines, patch cuda-pq2-rolled-source.patch SHA25665071704a5548554161ab6b04d408ebbcf4953eb854602806479add40fe2da20. Author source-expansion/diff checks passed; independent source review is pending before integration/build. The existing clean full-format OFF build cache uses Release/86-real and root source; no compiler processes or candidate log/snapshot artifacts already exist. Its preserved OFF snapshot will remain immutable if that build directory is reused.
