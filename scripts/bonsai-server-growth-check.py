@@ -127,7 +127,9 @@ def atomic_results(body, response):
     return by_slot
 
 
-def load_reference(path, concurrent_only=False, atomic_concurrent=False):
+def load_reference(path, concurrent_only=False, atomic_concurrent=False, growth_only=False):
+    require(not growth_only or not (concurrent_only or atomic_concurrent),
+            "--growth-only conflicts with --concurrent-only and --atomic-concurrent")
     with path.open(encoding="utf-8") as source:
         rows = [json.loads(line) for line in source]
     require(rows and rows[-1].get("kind") == "summary" and rows[-1].get("status") == "passed",
@@ -143,12 +145,13 @@ def load_reference(path, concurrent_only=False, atomic_concurrent=False):
         require(results[0].get("case") == "atomic-concurrent", "Atomic reference case differs")
         atomic_results(results[0]["request"], results[0]["response"])
         return metadata[0], {"atomic-concurrent": results[0]}
-    allowed_counts = (4, 8) if concurrent_only else (8,)
+    allowed_counts = (4, 8) if concurrent_only or growth_only else (8,)
     require(len(metadata) == 1 and len(results) in allowed_counts,
             f"Reference requires metadata and result count in {allowed_counts}")
     require(rows[-1].get("cases") == len(results), "Reference summary/result count differs")
-    expected_mode = "concurrent-only" if len(results) == 4 else "full"
-    require(all(row.get("mode", expected_mode) == expected_mode for row in (metadata[0], rows[-1])),
+    expected_mode = ("growth-only" if growth_only else "concurrent-only") if len(results) == 4 else "full"
+    legacy_mode = None if expected_mode == "growth-only" else expected_mode
+    require(all(row.get("mode", legacy_mode) == expected_mode for row in (metadata[0], rows[-1])),
             "Reference mode/result count differs")
     by_name = {row["case"]: row for row in results}
     require(len(by_name) == len(results), "Duplicate reference cases")
@@ -158,9 +161,12 @@ def load_reference(path, concurrent_only=False, atomic_concurrent=False):
 
 
 def run(args, request=request_json):
+    require(not args.growth_only or not (args.concurrent_only or args.atomic_concurrent),
+            "--growth-only conflicts with --concurrent-only and --atomic-concurrent")
     require(not args.atomic_concurrent or args.concurrent_only, "--atomic-concurrent requires --concurrent-only")
-    reference = load_reference(args.reference, args.concurrent_only, args.atomic_concurrent) if args.reference else None
-    mode = "atomic-concurrent" if args.atomic_concurrent else "concurrent-only" if args.concurrent_only else "full"
+    reference = load_reference(args.reference, args.concurrent_only, args.atomic_concurrent, args.growth_only) if args.reference else None
+    mode = ("growth-only" if args.growth_only else "atomic-concurrent" if args.atomic_concurrent
+            else "concurrent-only" if args.concurrent_only else "full")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as output:
         lock = threading.Lock()
@@ -212,7 +218,7 @@ def run(args, request=request_json):
             tokenize_body = {"content": CORPUS * (max(SIZES) // 8 + 1)}
             tokenized = call("/tokenize", tokenize_body)
             cases = make_cases(tokenized["tokens"], args.tokens)
-            selected_cases = cases[4:] if args.concurrent_only else cases
+            selected_cases = cases[:4] if args.growth_only else cases[4:] if args.concurrent_only else cases
             if args.atomic_concurrent:
                 bulk_body = dict(cases[4][1], prompt=[body["prompt"] for _, body in cases[4:]])
                 del bulk_body["id_slot"]
@@ -220,7 +226,7 @@ def run(args, request=request_json):
                     require(bulk_body == reference[1]["atomic-concurrent"]["request"],
                             "Atomic reference request differs")
             elif reference:
-                reference_cases = cases if len(reference[1]) == 8 else cases[4:]
+                reference_cases = cases if len(reference[1]) == 8 else selected_cases
                 require(set(reference[1]) == {name for name, _ in reference_cases}, "Reference case names differ")
                 for name, body in selected_cases:
                     require(body == reference[1][name]["request"], f"Reference request differs: {name}")
@@ -266,7 +272,7 @@ def run(args, request=request_json):
                 except Exception as error:
                     record({"kind": "error", "case": "atomic-concurrent", "error": str(error)})
                     raise
-            else:
+            elif not args.growth_only:
                 print("Checking four concurrent explicit slots", flush=True)
                 barrier = threading.Barrier(4)
                 errors = []
@@ -291,8 +297,11 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:8090")
     parser.add_argument("--output", required=True, type=Path, help="exclusive new JSONL artifact")
     parser.add_argument("--reference", type=Path, help="completed passing artifact to compare")
-    parser.add_argument("--concurrent-only", action="store_true",
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--concurrent-only", action="store_true",
                         help="run only slots 0..3 concurrently; accepts a passing four- or eight-case reference")
+    modes.add_argument("--growth-only", action="store_true",
+                       help="run only 512/4096/16384/512 growth; accepts a passing growth-only or full reference")
     parser.add_argument("--atomic-concurrent", action="store_true",
                         help="requires --concurrent-only; send four identical prompts in one request; atomic references only")
     parser.add_argument("--tokens", type=int, default=16)
@@ -300,6 +309,8 @@ def main():
     parser.add_argument("--logprob-atol", type=float, default=LOGPROB_ATOL,
                         help="absolute log-probability tolerance (default 1e-4 natural-log units; relative tolerance zero)")
     args = parser.parse_args()
+    if args.growth_only and args.atomic_concurrent:
+        parser.error("--growth-only conflicts with --atomic-concurrent")
     if args.atomic_concurrent and not args.concurrent_only:
         parser.error("--atomic-concurrent requires --concurrent-only")
     if not 1 <= args.tokens <= 512 or not math.isfinite(args.timeout) or args.timeout <= 0:

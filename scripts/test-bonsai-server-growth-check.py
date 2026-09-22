@@ -76,7 +76,8 @@ class GrowthTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name)
         self.args = Namespace(url="http://mock", output=self.path/"baseline.jsonl", reference=None,
-                              tokens=2, timeout=2, logprob_atol=1e-4, concurrent_only=False, atomic_concurrent=False)
+                              tokens=2, timeout=2, logprob_atol=1e-4, concurrent_only=False, atomic_concurrent=False,
+                              growth_only=False)
 
     def rows(self):
         return [json.loads(line) for line in self.args.output.read_text().splitlines()]
@@ -110,6 +111,121 @@ class GrowthTests(unittest.TestCase):
         rows = self.rows()
         self.assertEqual(rows[-1]["status"], "failed")
         self.assertEqual(len([row for row in rows if row["kind"] == "result"]), 1)
+
+    def test_growth_only_order_and_complete_audit(self):
+        self.args.growth_only = True
+        service = MockService()
+        with patch.object(GROWTH, "ThreadPoolExecutor", side_effect=AssertionError("concurrent work started")):
+            GROWTH.run(self.args, service)
+        self.assertEqual([len(body["prompt"]) for body in service.completions], [512, 4096, 16384, 512])
+        self.assertEqual({body["id_slot"] for body in service.completions}, {0})
+        rows = self.rows()
+        self.assertEqual(rows[-1], dict(kind="summary", status="passed", mode="growth-only", cases=4, compared=False))
+        self.assertEqual(next(row for row in rows if row["kind"] == "metadata")["mode"], "growth-only")
+        requests = [row for row in rows if row["kind"] in ("request", "http_request")]
+        responses = [row for row in rows if row["kind"] in ("result", "http_response")]
+        self.assertEqual(len(requests), 12)
+        self.assertEqual({row["request_id"] for row in requests}, {row["request_id"] for row in responses})
+
+    def test_growth_only_accepts_full_and_growth_references(self):
+        GROWTH.run(self.args, MockService())
+        self.args.reference = self.args.output
+        self.args.growth_only = True
+        for name in ("growth-from-full.jsonl", "growth-from-growth.jsonl"):
+            self.args.output = self.path/name
+            service = MockService(probability_delta=0.00005)
+            GROWTH.run(self.args, service)
+            self.assertEqual(len(service.completions), 4)
+            self.assertTrue(self.rows()[-1]["compared"])
+            self.args.reference = self.args.output
+        self.args.growth_only = False
+        self.args.output = self.path/"full-from-growth.jsonl"
+        with self.assertRaisesRegex(ValueError, "result count"):
+            GROWTH.run(self.args, MockService())
+        self.assertFalse(self.args.output.exists())
+        with self.assertRaisesRegex(ValueError, "mode/result count"):
+            GROWTH.load_reference(self.args.reference, concurrent_only=True)
+
+    def test_growth_only_rejects_incomplete_or_wrong_references(self):
+        GROWTH.run(self.args, MockService())
+        full = self.rows()
+        partial = [row for row in full if row["kind"] != "result" or row["case"].startswith("growth-")]
+        wrong_mode = copy.deepcopy(partial)
+        wrong_mode[-1]["cases"] = 4
+        three = [row for row in partial if row.get("case") != "growth-3-512"]
+        three[-1] = dict(kind="summary", status="passed", cases=3, mode="growth-only")
+        for index, rows in enumerate((partial, wrong_mode, three)):
+            path = self.path/f"invalid-growth-{index}.jsonl"
+            path.write_text("".join(json.dumps(row)+"\n" for row in rows))
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                GROWTH.load_reference(path, growth_only=True)
+        self.args.growth_only = True
+        self.args.output = self.path/"growth-valid.jsonl"
+        GROWTH.run(self.args, MockService())
+        valid_rows = self.rows()
+        for index, mutation in enumerate((
+                lambda rows: next(r for r in rows if r["kind"] == "result").update(case="unexpected-growth"),
+                lambda rows: next(r for r in rows if r["kind"] == "metadata").pop("mode"))):
+            rows = copy.deepcopy(valid_rows)
+            mutation(rows)
+            reference = self.path/f"bad-growth-mode-name-{index}.jsonl"
+            reference.write_text("".join(json.dumps(row)+"\n" for row in rows))
+            self.args.reference = reference
+            self.args.output = self.path/f"rejected-growth-{index}.jsonl"
+            service = MockService()
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                GROWTH.run(self.args, service)
+            self.assertFalse(service.completions)
+
+    def test_growth_only_conflicts_before_requests(self):
+        self.args.growth_only = True
+        for concurrent, atomic in ((True, False), (False, True), (True, True)):
+            self.args.concurrent_only, self.args.atomic_concurrent = concurrent, atomic
+            service = unittest.mock.Mock(side_effect=AssertionError("HTTP attempted"))
+            with self.subTest(concurrent=concurrent, atomic=atomic), self.assertRaisesRegex(ValueError, "conflicts"):
+                GROWTH.run(self.args, service)
+            service.assert_not_called()
+        for flag in ("--concurrent-only", "--atomic-concurrent"):
+            argv = ["checker", "--growth-only", flag, "--output", str(self.args.output)]
+            with patch("sys.argv", argv), patch.object(GROWTH, "run") as run, patch("sys.stderr", io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    GROWTH.main()
+                self.assertEqual(error.exception.code, 2)
+                run.assert_not_called()
+        with patch("sys.argv", ["checker", "--growth-only", "--output", str(self.args.output)]), patch.object(GROWTH, "run") as run:
+            GROWTH.main()
+            parsed = run.call_args.args[0]
+            self.assertTrue(parsed.growth_only)
+            self.assertFalse(parsed.concurrent_only or parsed.atomic_concurrent)
+        self.assertFalse(self.args.output.exists())
+
+    def test_growth_only_probability_failure_retains_response(self):
+        self.args.growth_only = True
+        GROWTH.run(self.args, MockService())
+        self.args.reference = self.args.output
+        self.args.output = self.path/"growth-mismatch.jsonl"
+        with self.assertRaisesRegex(ValueError, "Logprob differs"):
+            GROWTH.run(self.args, MockService(probability_delta=0.001))
+        rows = self.rows()
+        result = next(row for row in rows if row["kind"] == "result")
+        self.assertEqual(result["case"], "growth-0-512")
+        self.assertAlmostEqual(result["response"]["completion_probabilities"][0]["logprob"], -0.199)
+        self.assertTrue(any(row["kind"] == "error" and row["case"] == result["case"] for row in rows))
+        self.assertEqual(rows[-1]["status"], "failed")
+        self.assertEqual(rows[-1]["mode"], "growth-only")
+
+    def test_growth_only_requires_exact_reference_requests(self):
+        self.args.growth_only = True
+        GROWTH.run(self.args, MockService())
+        rows = self.rows()
+        next(row for row in rows if row["kind"] == "result")["request"]["seed"] = 99
+        self.args.reference = self.path/"growth-wrong-request.jsonl"
+        self.args.reference.write_text("".join(json.dumps(row)+"\n" for row in rows))
+        self.args.output = self.path/"growth-request-rejected.jsonl"
+        service = MockService()
+        with self.assertRaisesRegex(ValueError, "Reference request differs"):
+            GROWTH.run(self.args, service)
+        self.assertFalse(service.completions)
 
     def test_concurrent_only_accepts_full_and_four_case_references(self):
         GROWTH.run(self.args, MockService())
@@ -336,7 +452,8 @@ class AtomicTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name)
         self.args = Namespace(url="http://mock", output=self.path/"atomic.jsonl", reference=None,
-                              tokens=2, timeout=2, logprob_atol=1e-4, concurrent_only=True, atomic_concurrent=True)
+                              tokens=2, timeout=2, logprob_atol=1e-4, concurrent_only=True, atomic_concurrent=True,
+                              growth_only=False)
 
     def rows(self):
         return [json.loads(line) for line in self.args.output.read_text().splitlines()]

@@ -697,3 +697,39 @@ Applied the same tool to025 fresh control/candidate A. It passed correctness and
 ### Ingestion acceptance gates added to comparison tool
 
 The comparator now also supports paired --min-ingest-gain-pct and --max-decode-regression-pct, mutually exclusive with the existing decode-focused pair. Existing positional API and JSON fields remain available; results identify the selected axis. Incomplete/mixed/nonfinite/negative thresholds are rejected, and every prompt must pass both bounds. Fifteen CPU tests pass, including the original11, boundary/failure/undefined-decode cases and output artifacts. Independent review passed; the023 four-artifact smoke passes the2% ingest /2% output-regression gate. Experiment026 will use this same tool with its preregistered thresholds.
+
+
+### 026 source review: CUDA passed, test-construction blocker found
+
+Independent review of v2 passed the target CUDA implementation: Q8 layout/padding, complete40-block accumulation,57856-byte shared configuration, existing fragment mapping/tail bounds, same-stream buffer lifetime, narrow eligibility and generic fallback. Added successful staged_launch records under existing DEBUG_CUDA_FFN_FUSION to prove dispatch during host submission/capture; replay does not re-enter that host path.
+
+Review found a test-only null graph hazard before any candidate build: the reversed-input test called ggml_build_forward_expand on member gf, while eval_perf constructs the graph before initializing its separate local graph. Filtering follows construction, so an unrelated perf selection could reach this null dereference. This is a source finding, not a reproduced runtime crash. A minimal initialized-member guard is required before compilation; original v1/v2 patches remain preserved. Eight CPU-reference cases have been added but are not yet executed.
+
+
+### 026 v3 source gate passed; build started
+
+The reversed-input test now pre-expands only when mode is MODE_TEST and member gf is non-null. Independent delta review confirmed that correctness evaluation initializes both before construction and retains the required node ordering, while performance mode skips the unsafe pre-expansion. Final source spec/quality review passed. V3 was applied after a clean patch check; v1/v2/v3 remain preserved. The canonical CUDA build is running with complete output reserved exclusively at `cuda-build-prefill-staged-ffn.txt`. The accepted supervised service remains available during compilation; no performance measurement runs alongside the build.
+
+
+### 026 build and GPU correctness passed with observed dispatch
+
+Canonical build exited0 (`cuda-build-prefill-staged-ffn.txt`). All8 PQ2_STAGED_FFN whole-graph CPU-reference cases passed on CUDA0. The diagnostic emitted exactly two staged_launch records, one each for508 and512 tokens; the six fallback cases emitted none. Existing PQ2 fusion passed44/44 and MUL_MAT101/101; allocator success/failure/retry passed6/6. A deliberately nonmatching perf selector completed graph construction and exited0 without executing throughput cases, checking the reviewed null-graph fix. Artifacts are `cuda-staged-ffn-{staged,fusion,mulmat,alloc,perf-construction}.{stdout,stderr}.txt`.
+
+The11-file `tools/llamacpp-cuda-prefill-staged-ffn` snapshot matches build hashes in `cuda-prefill-staged-ffn-binary-hashes.json`. The authorized maintenance window was reopened after inspecting the supervised wrapper/launcher/server command lines in session0 and verifying all slots idle; receipt `cuda-maintenance/stopped026.json`. Fresh accepted-build control A is now measured on the actual service with lazy allocation enabled and all diagnostics off. No builds or GPU-reference tests overlap these performance requests.
+
+
+### 026 generated code passed inspection
+
+`cuda-prefill-staged-ffn-sass-comparison.json` and related control-flow/kernel artifacts identify the new staged symbol. It uses250 registers versus254 in retained generic PQ2 J128, with zero reported stack/local allocation and no LDL/STL spills. Both round to one256-thread CTA per SM under the register budget; this is inferred occupancy. Static instructions/code bytes are3584/57344 versus5520/88320, which is not a dynamic instruction or speed measurement. Candidate generic J128 instruction text is identical to retained.
+
+The full-K loop starts0, increments2 and exits40; SiLU/gate multiplication follows loop completion, and tail predicates guard gate loads/output stores. Dynamic shared memory remains57856 bytes. Generic stream-K can in general use a different reduction order, so strict actual-service output/probability checks remain mandatory even though the target geometry is expected to use complete-K tiles.
+
+
+### 026 fresh control A completed
+
+`cuda-service-staged-ffn-control-a.jsonl` completed exit0 (PID21524, monitor23665). Medians:512 ingest425.149/output34.872 tok/s, wall8.5198s;4096 ingest512.417/output32.994, wall15.7160s. Candidate A starts with the identical production arguments, lazy allocation enabled and diagnostics off. Timing is preliminary until strict service correctness and repeat comparisons pass.
+
+
+### Sequential growth correctness mode added
+
+The canonical checker now supports --growth-only for the unchanged512/4096/16384/512 sequence. This separates allocator/growth correctness from the previously demonstrated HTTP-admission confound; atomic four-slot checks remain a separate gate. It accepts passing full8-case or explicitly marked4-case growth references, rejects incomplete/incompatible references and conflicting modes, and keeps exact request/token/content comparisons plus the1e-4 probability tolerance. All28 CPU tests pass, including22 existing cases; independent spec/quality review passed. No HTTP or GPU calls occurred during the tool tests.
