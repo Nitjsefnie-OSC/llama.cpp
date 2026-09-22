@@ -900,3 +900,21 @@ Purpose: attribute current service prefill and decode while CUDA graph replay re
 The accepted service is being launched through Nsight session bonsai028decode with DEBUG_CUDA_* flags cleared and no elevation or system installation. Full launch output and real exit status are reserved at cuda-nsys028-launch.*. Runtime privilege support and useful device events are still unverified.
 
 027 wording correction: the 512-token ingest delta (+4.736%) exceeds 2%; the 4096-token delta (+1.051%) does not. Thus an ingest gate requiring both lengths would fail, while the actual preregistered output gate fails at both lengths. The previous sentence saying neither length clears a 2% ingest gate was incorrect; the table and rejection decision are unchanged.
+
+
+### 028 non-admin CUDA-only capture succeeded; ordinary service restored
+
+Nsight start and stop both exited 0 with CPU sampling, CPU context switches and GPU metrics disabled. Two actual-service 512-prompt/32-output requests completed and produced cuda-service-nsys028-decode.nsys-rep (4,881,889 bytes). This establishes non-admin CUDA-only capture for this machine; it does not establish access to CPU sampling or GPU hardware counters. Graph node device events and replay correlation are undergoing independent verification before any bottleneck claim.
+
+After capture conversion completed, the inspected idle profiled server PID 3548 was intentionally stopped. The launch command, which remained attached to the application lifetime, consequently returned -1; its stdout says Collecting data and stderr is empty. This is preserved in cuda-nsys028-launch.* and is distinct from successful capture start/stop/benchmark exits. No Nsight processes remain in the subsequent CIM inspection.
+
+The original supervisor was restored byte-for-byte to SHA256 54af3284fda7d5a446f5df8c7a82121444576fff96283d7eea21dbf7362142be, with the maintenance version preserved. All 11 deployed files match the accepted lazy-reserve snapshot. The ordinary scheduled service is healthy, PID 1944. An identical untraced 512/32 service request pair is running to bound trace perturbation; profile timings are not counted as optimization results.
+
+028 control-launch correction: passing --pid 1944 failed immediately in OpenProcess with WinError 5 because the ordinary scheduled service runs in another Windows session. No HTTP request or result file was created. The canonical optional-PID path is now being used for the same HTTP benchmark, omitting affinity/process-memory inspection; no privileges, affinity or service settings were changed. The previous entry described the intended running control before this launch result was inspected.
+
+
+### 028 trace perturbation smoke comparison
+
+The identical untraced 512-prompt/32-output HTTP benchmark completed exit 0. Both warmup and measured requests have exact cross-condition request/token/content equality. The measured untraced result is 513.733 ingest / 34.977 output tok/s versus traced 410.537 / 34.130: -20.087% ingest, -2.421% output, +13.890% wall time. This single sample uses distinct restarted processes and different thermal/Windows-session conditions, so it is not a precise causal overhead estimate. The output trace is much closer to current service cadence than the earlier replay-disabling instrumentation; prefill timing is visibly perturbed and must not be treated as native throughput. Comparator artifact: cuda-service-nsys028-overhead-comparison.json; no performance acceptance gate was requested.
+
+Independent export inspection found 132,598 positive-duration kernels, 118,980 graph-node kernels and 60 cudaGraphLaunch calls. Node mode intentionally has no whole-graph activity rows. DIAGNOSTIC_EVENT warns that not all CUDA events might have been collected; per-replay coverage and correlation are still being checked. No claim that summed event times account for every service delay is made yet.
