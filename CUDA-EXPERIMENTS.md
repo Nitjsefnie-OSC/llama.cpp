@@ -793,3 +793,110 @@ Retained fused K5120 SASS executes five iterations of 138 instructions; only thr
 ### 027 source prepared for independent review
 
 The five-file optional Bonsai-only candidate is preserved at `cuda-bonsai-only-source.patch`, SHA256 5b8e54691f63603a6eda895602f9ff9cacb87c70d998a47086405fade0ced89f. Author source checks report exactly two retained MMQ translation units, aligned MMQ/MMVQ guards and default-OFF token equivalence. These are source checks, not a successful build. Independent review is running before integration or compilation. For clarity before measurement, the primary service gate for this memory-headroom hypothesis is >=2% output gain at both prompt lengths with <=2% ingest regression; gains in DLL size alone cannot satisfy it.
+
+
+### 027 source review correction and reproducible build control
+
+Initial independent review found the MUL_MAT_ID path calls get_mmvq_mmid_max_batch directly, bypassing should_use_mmvq. Scheduler support rejection protects normal placement, but the helper still returned a positive batch limit for removed types. The revised source returns zero for non-PQ2_0/non-Q4_0 types under the option, also covering synchronization prediction. This is a source-review finding, not a reproduced Bonsai runtime failure.
+
+The canonical build script now has a trailing -BonsaiOnly switch and explicitly configures GGML_CUDA_BONSAI_ONLY=ON or OFF every time, preventing stale cache state from changing later controls. Author parsing, OFF/ON/OFF mock configuration, default-OFF source-equivalence and ON-whitelist checks passed; independent delta review follows. V1 and V2 remain preserved; V3 is `cuda-bonsai-only-source-v3.patch`, SHA256 28969c58845e45782a226bced6d80aa33be5d2aab2f1c1e4b0482ae6bec6f602. Its patch check against current retained source passed. Separate clean OFF/ON build directories and exclusive log paths are unused, with no compiler processes already running.
+
+
+### 027 final source review passed; clean baseline build started
+
+Independent spec and quality review passed V3, including the MMID helper fix, default-OFF equivalence, PowerShell parsing, explicit false, and mocked OFF/ON/OFF configurations. Applied the reviewed six-file patch to root after its clean check; whitespace validation passed. Clean OFF compilation is running through the canonical script in build-bonsai-only-off (monitor 21155); ON will use a separate clean build-bonsai-only-on directory. Complete monitor output will be retained as build artifacts when each build finishes. The accepted ordinary service stays available during compilation, and no throughput benchmark overlaps compilation.
+
+The retained-format runtime matrix is source-derived and must be confirmed by nonzero executed counts: PQ2 matmul 101, PQ2 fused decode 44, whole-graph PQ2 FFN 8, small Q4_0 matmul 3, F32/F16/BF16 matmul 9, and Q4_0 attention 2 cases per build. The two attention cases cover vector Q4 attention and the F16 MMA path with Q4 conversion. Counts and selectors have not yet been runtime-verified for this candidate. Strict service growth/atomic checks and primary output-speed acceptance follow only after these gates.
+
+
+### PQ2 separate-plane repack rejected before implementation
+
+Read-only source/SASS review found naturally aligned U16/S16 weight loads at retained fused-loop addresses 0x01f0-0x0350. Its 19 loads comprise eight quant-payload halfwords, two weight scales and nine Q8 activation loads; existing permutations decode 2-bit symbols rather than repair misaligned loads. Separate payload planes might permit fewer wider loads, but require extraction and different register scheduling. CPU enumeration of the target lane addresses found nine unique 32-byte sectors per weight/warp iteration in either layout (current interleaving nine; separate planes eight quant plus one scale). This does not establish a reduction in DRAM bytes or measured stalls.
+
+A same-size repack would require coordinated translation for arbitrary chunk and 2D uploads/readbacks, D2D copies, parent-offset views, CPU copies and GGUF tensor_get serialization, as well as MMQ/MMVQ/dequant/getrows consumers. Temporary conversion storage can avoid permanent duplicated weights, but does not remove those format contracts for the served model. No bounded change with a credible service gain was established; no implementation, build or runtime test is scheduled. Evidence: retained SASS resource artifact, vecdotq.cuh, ggml-cuda.cu buffer callbacks, ggml-backend.cpp views/copies, llama-model-loader.cpp chunking and gguf.cpp writer.
+
+### Need for graph-preserving profiling recorded
+
+The existing diagnostic decode profile contains seven graphs at 325.369 ms total, with 293.262 ms attributed to operations and 32.107 ms outside that sum. Its own metadata states DEBUG_CUDA_TIMING disables replay and adds synchronization, so those approximately 46 ms per graph cannot represent the current approximately 29 ms service decode. A read-only discovery task is checking local NVIDIA tracing tools and a graph-preserving service capture route before recommending another kernel change from that profile. No profiler has been launched or installed.
+
+
+### 027 build-output retention limitation
+
+The clean OFF build emits enough compiler-template warnings to exceed the monitor read limit (truncated=true at roughly 1 MiB). This corrects the earlier promise of a complete monitor-output artifact: preserve the retained output and terminal status, but do not label it the complete compiler log. Compilation is still progressing. Future builds will use an exclusive full log with the command exit code preserved, as earlier experiments did, instead of relying on this capped capture. No successful build will be repeated merely to regenerate warning text.
+
+
+### 027 clean OFF build passed; ON build running
+
+The clean OFF build completed all 485 steps and exited 0 (monitor 21155, approximately 594 seconds observed). Its native capture retained 1 MiB of 19,084,338 emitted bytes; the explicitly marked partial artifact is `cuda-build-bonsai-only-off.retained.txt`. The compiler warning text was not regenerated. All 11 OFF snapshot files were copied exclusively to tools/llamacpp-cuda-bonsai-only-off and hash-verified (`cuda-bonsai-only-off-binary-hashes.json`); the OFF CMake cache was checked.
+
+Clean ON compilation is now running through the canonical -BonsaiOnly switch in a separate directory, with complete stdout/stderr reserved at `cuda-build-bonsai-only-on.txt` and its real exit code propagated by the wrapper. Offline OFF symbol/resource inspection is independent of this build. No throughput measurement or GPU correctness workload is running during compilation.
+
+
+### 027 generated build topology verified
+
+Generated CMake caches and Ninja compile rules confirm OFF has 24 MMQ translation units and no Bonsai-only compiler define; ON has exactly pq2_0 and q4_0 translation units with the define enabled. Evidence: `cuda-bonsai-only-build-topology.json`. ON compilation remains in progress; no runtime conclusion follows from this source/build graph check.
+
+### External graph-preserving profiler preparation
+
+Local discovery found no Nsight/CUPTI profiler in checked locations. NVIDIA's general Windows CLI documentation requires administrator execution, while both this shell and LlamaSupervisor use Limited tokens; CUDA-only behavior with CPU sampling/context-switch/counter collection disabled remains untested. The official standalone Nsight Systems 2026.5.1.161 MSI is 663,678,976 bytes. Workspace-only download, NVIDIA signature verification and pure archive extraction are being prepared; no system installation, task privilege change, UAC launch or profiler capture is authorized within that preparation. Actual capture must explicitly enable LLAMA_LAZY_COMPUTE_RESERVE=1 to match the retained service, since bonsai-server-run.ps1 itself does not set it.
+
+
+### 027 OFF kernel inventory preserved
+
+Offline inspection of the 129,346,048-byte OFF CUDA DLL found 145 SM86 modules, 6,990 resource records and 6,514 unique function symbols. PQ2 is enum 142. Targeted dumps cover all 19 PQ2 MMVQ and 64 PQ2 MMQ functions. Retained fused warp true uses 37 registers / 3,968 text bytes; warp false uses 42 / 5,120; PQ2 J128 MMQ uses 254 registers with 88,320 text bytes (fallback false) or 96,768 (fallback true). Those kernels report zero local/stack storage. The MMVQ cubin contains 3,828,736 total text bytes and the PQ2 MMQ cubin 1,221,760; these are compiled sections, not resident VRAM.
+
+Artifacts have the cuda-bonsai-only-off- prefix: resource.txt, symbols.txt, elf-list.txt, functions.json, pq2-mmvq-sass.txt, pq2-mmq-sass.txt, cubin-sections.json, pq2-comparison-baseline.json, inventory-provenance.json, targeted-provenance.json and extracted cubins. Full native outputs and command exit codes are preserved in exclusive files. ON comparison will check absent functions/modules and all 83 retained kernels' resources and normalized instructions, preserving predicates/mnemonics/operands while excluding address annotations and encoding comments.
+
+
+### 027 clean ON build and binary snapshot passed
+
+The clean ON build completed all 463 steps and exited 0 (session 53286); full compiler output is `cuda-build-bonsai-only-on.txt`. All 11 ON snapshot files were copied exclusively to tools/llamacpp-cuda-bonsai-only-on and hash-verified (`cuda-bonsai-only-on-binary-hashes.json`). CUDA DLL size changed from 129,346,048 to 83,599,360 bytes, a compiled-file reduction only, not evidence of resident-memory or throughput improvement.
+
+The authorized maintenance window was opened after inspecting the ordinary wrapper/launcher/server command lines from session 0 and checking all four slots idle. Only inspected PIDs 10348, 23284 and 5320 were stopped, with receipt `cuda-maintenance/stopped027.json`; the tunnel remains untouched. The original supervisor is still preserved for byte-for-byte restoration. CPU-reference correctness for both fresh builds is running with exact expected nonzero counts and exclusive stdout/stderr/result artifacts, while the independent offline ON kernel comparison proceeds. No throughput benchmark overlaps those checks.
+
+
+### 027 static code gate passed; runtime-launch failure recorded
+
+Independent OFF/ON comparison passed for all 83 retained PQ2 kernels: identical normalized instructions/operands, raw ELF machine-code bytes, code sizes, registers, local/stack memory and other resources. No mismatches. SM86 modules decrease 145 to 123; resource records 6,990 to 5,236; ELF text 91,159,936 to 54,962,944 bytes; ELF global sections 3,900,875 to 3,306,919 bytes. Removed symbols comprise 1,408 MMQ kernels across 22 types and 346 MMVQ kernels across 23 types. Both families retain only PQ2_0 and Q4_0. Full evidence is `cuda-bonsai-only-comparison.json` and the exclusive OFF/ON inventories, SASS, section reports, cubins and provenance. These are compiled-artifact results, not physical-memory or speed gains.
+
+The first runtime orchestration attempt (monitor 11637) failed with Python SyntaxError at an inline regular-expression argument before any test or result artifact started. The same finite matrix was saved to `cuda-bonsai-only-runtime-check.py`, parsed successfully with py_compile and relaunched as a file (monitor 89988). The failure did not relax any expected counts or correctness criteria.
+
+### Standalone profiler is prepared, capture still untested
+
+Nsight Systems 2026.5.1.161 was downloaded and NVIDIA Authenticode-verified, then extracted without running installer actions. All 6,654 reconstructed files were hash-checked. MSI SHA256 is 379c0a15a9cf7b8028081073fdd1d9798b9aaa618fb46c6a01785b69ed01d5f2; CLI SHA256 is e597347ef6cb45456612c0c9593401bb6d1b85497bb18534968f309955831291. Version and launch/start/stop help exited 0. Installed help corrects web-derived examples: --sample and --cpuctxsw belong on start, not launch. No profiler capture, installation, elevation or permission change has occurred. Full preparation evidence and commands are in `nsight-preparation-ready.md`.
+
+
+### 027 all retained-format backend references passed
+
+The file-based runner completed exit 0 (monitor 89988). Both clean builds passed 101/101 PQ2 matmul, 44/44 PQ2 fused decode, 8/8 whole-graph PQ2 FFN, 3/3 Q4_0 matmul, 9/9 F32/F16/BF16 matmul, and 2/2 Q4_0 attention cases: 167 per build, 334 total. These are CPU-reference correctness checks; their durations are not service throughput results. Full per-command outputs, exact arguments, exits and count assertions remain in cuda-bonsai-only-{off,on}-*.stdout/stderr.txt and `cuda-bonsai-only-runtime-results.jsonl`.
+
+The pruned build is now healthy at the stable service path, PID 9040, with original production arguments and lazy reservation enabled. Strict 512/4096/16384/512 service growth/reference checking is running before four-slot atomic checking and uninstrumented OFF/ON speed comparison. All profiling flags remain off for those checks.
+
+
+### 027 strict actual-service correctness passed
+
+The pruned build passed all four 512/4096/16384/512 growth cases, repeated-prompt consistency, and all four slots in one atomic concurrent request. Both commands exited 0, matching exact reference requests, generated tokens/content, and top-five probabilities within the existing absolute 1e-4 gate. Evidence: cuda-bonsai-only-on-growth-correctness.jsonl and cuda-bonsai-only-on-atomic-correctness.jsonl. No timing instrumentation was enabled. The inspected idle candidate server PID 9040 was stopped for fresh OFF/ON conditioned speed comparisons; accepted binaries and original supervisor remain preserved. Still two validated throughput wins.
+
+
+### 027 rejected: smaller binary did not improve service output
+
+The fresh OFF/ON runs used identical production settings, lazy reservation, separate conditioning (four requests), normal warmups and three measured requests at each length. Both benchmark commands exited 0. All eight cross-condition requests/tokens/content match; the comparator exited 1 solely for the preregistered >=2% output gate. Conditioning and warmups are excluded below.
+
+| Prompt | OFF ingest | ON ingest | Change | OFF output | ON output | Change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 400.344 | 419.306 | +4.736% | 35.069 | 35.149 | +0.230% |
+| 4096 | 504.719 | 510.025 | +1.051% | 33.163 | 33.038 | -0.377% |
+
+No target output gain was established. The 512-token ingest signal was not consistent across both lengths, and neither length clears a 2% ingest gate; no post-hoc win is counted. Stop this candidate without more pairs. All six measured before/after Windows process GPU-memory samples in both conditions were identical: dedicated 11,266,936,832 bytes and shared 111,149,056 bytes. These are allocation counters, not proof of physical residency. Matched shape warmup and byte-identical retained kernels leave no observed service memory benefit despite the 35.37% smaller CUDA DLL.
+
+Evidence: cuda-service-bonsai-only-{off,on}-a.jsonl, separate conditioning files, cuda-service-bonsai-only-comparison-a.json and cuda-bonsai-only-service-memory-comparison.json. Warmed OFF samples began at 71-75 C and ended at 82-86 C; ON began at 73-74 C and ended at 84-85 C. No claim of identical clocks throughout a request is made.
+
+Reversed the exact V3 six-file patch and verified all six files equal retained HEAD. Preserved source patches, snapshots, inventories, native test outputs and service artifacts. Stopped inspected idle PID 8684 and redeployed the accepted lazy-reserve snapshot through the canonical helper. The original supervisor remains temporarily guarded for the immediately following profiler maintenance; it has not yet been restored. Still two validated speed wins.
+
+### 028 graph-preserving trace: minimal privilege probe
+
+Purpose: attribute current service prefill and decode while CUDA graph replay remains enabled. The older DEBUG_CUDA_TIMING profile disables replay and is not suitable for this attribution. First test workspace-extracted Nsight Systems with CUDA tracing only, host-launched graph node activities, CPU sampling/context switches/GPU counters disabled and lazy reservation enabled. A trace is diagnostic evidence, not a throughput win; profile overhead must be checked against an untraced service request before using durations to predict a change.
+
+The accepted service is being launched through Nsight session bonsai028decode with DEBUG_CUDA_* flags cleared and no elevation or system installation. Full launch output and real exit status are reserved at cuda-nsys028-launch.*. Runtime privilege support and useful device events are still unverified.
+
+027 wording correction: the 512-token ingest delta (+4.736%) exceeds 2%; the 4096-token delta (+1.051%) does not. Thus an ingest gate requiring both lengths would fail, while the actual preregistered output gate fails at both lengths. The previous sentence saying neither length clears a 2% ingest gate was incorrect; the table and rejection decision are unchanged.
