@@ -124,11 +124,16 @@ def load_run(path):
         raise InvalidRun(f"{path}: {error}") from error
 
 
-def compare(baseline, candidate, min_decode_gain=None, max_ingest_regression=None):
+def compare(baseline, candidate, min_decode_gain=None, max_ingest_regression=None, *,
+            min_ingest_gain=None, max_decode_regression=None):
     require(bool(baseline) and bool(candidate), "Both conditions require at least one artifact")
     require((min_decode_gain is None) == (max_ingest_regression is None), "Both performance thresholds are required together")
-    if min_decode_gain is not None:
-        require(number(min_decode_gain) and number(max_ingest_regression), "Thresholds must be finite and nonnegative")
+    require((min_ingest_gain is None) == (max_decode_regression is None), "Both ingest performance thresholds are required together")
+    require(min_decode_gain is None or min_ingest_gain is None, "Decode and ingest gate pairs are mutually exclusive")
+    thresholds = (min_decode_gain, max_ingest_regression, min_ingest_gain, max_decode_regression)
+    require(all(value is None or number(value) for value in thresholds), "Thresholds must be finite and nonnegative")
+    axis = "decode" if min_decode_gain is not None else "ingest" if min_ingest_gain is not None else None
+    gain, regression = (min_decode_gain, max_ingest_regression) if axis == "decode" else (min_ingest_gain, max_decode_regression)
     paths = [Path(p).resolve() for p in [*baseline, *candidate]]
     require(len(set(paths)) == len(paths), "Duplicate artifact path")
     runs = [load_run(path) for path in paths]
@@ -145,8 +150,9 @@ def compare(baseline, candidate, min_decode_gain=None, max_ingest_regression=Non
                     raise OutputMismatch(f"{where}: output {field} differs from {reference['path']}")
     result = {"status": "passed", "correctness": "passed", "reference": reference["path"],
               "config": reference["config"], "conditions": {}, "prompts": [],
-              "gate": {"requested": min_decode_gain is not None, "passed": None,
-                       "min_decode_gain_pct": min_decode_gain, "max_ingest_regression_pct": max_ingest_regression}}
+              "gate": {"requested": axis is not None, "passed": None, "axis": axis,
+                       "min_decode_gain_pct": min_decode_gain, "max_ingest_regression_pct": max_ingest_regression,
+                       "min_ingest_gain_pct": min_ingest_gain, "max_decode_regression_pct": max_decode_regression}}
     groups = {"baseline": runs[:len(baseline)], "candidate": runs[len(baseline):]}
     for name, group in groups.items():
         result["conditions"][name] = [{k: run[k] for k in ("path", "sha256")} for run in group]
@@ -162,12 +168,13 @@ def compare(baseline, candidate, min_decode_gain=None, max_ingest_regression=Non
                                 for key in ("ingest_tps", "decode_tps", "wall_seconds")}
         require(all(value is None or math.isfinite(value) for value in prompt["change_pct"].values()),
                 f"Non-finite percentage change for prompt={size}")
-        if min_decode_gain is not None:
+        if axis is not None:
             delta = prompt["change_pct"]
-            prompt["gate_passed"] = (delta["decode_tps"] is not None and delta["decode_tps"] >= min_decode_gain and
-                                     delta["ingest_tps"] >= -max_ingest_regression)
+            other = "ingest" if axis == "decode" else "decode"
+            prompt["gate_passed"] = (delta["decode_tps"] is not None and delta[axis + "_tps"] >= gain and
+                                     delta[other + "_tps"] >= -regression)
         result["prompts"].append(prompt)
-    if min_decode_gain is not None:
+    if axis is not None:
         result["gate"]["passed"] = all(p["gate_passed"] for p in result["prompts"])
         if not result["gate"]["passed"]:
             result["status"] = "failed"
@@ -182,6 +189,8 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, help="exclusive new JSON result; also printed to stdout")
     parser.add_argument("--min-decode-gain-pct", type=float)
     parser.add_argument("--max-ingest-regression-pct", type=float)
+    parser.add_argument("--min-ingest-gain-pct", type=float)
+    parser.add_argument("--max-decode-regression-pct", type=float)
     args = parser.parse_args(argv)
     output = None
     try:
@@ -189,7 +198,8 @@ def main(argv=None):
             args.output.parent.mkdir(parents=True, exist_ok=True)
             output = args.output.open("x", encoding="utf-8")
         try:
-            result = compare(args.baseline, args.candidate, args.min_decode_gain_pct, args.max_ingest_regression_pct)
+            result = compare(args.baseline, args.candidate, args.min_decode_gain_pct, args.max_ingest_regression_pct,
+                             min_ingest_gain=args.min_ingest_gain_pct, max_decode_regression=args.max_decode_regression_pct)
         except (InvalidRun, OutputMismatch) as error:
             result = {"status": "failed", "correctness": "failed" if isinstance(error, OutputMismatch) else "not_established",
                       "baseline": [str(p) for p in args.baseline], "candidate": [str(p) for p in args.candidate],

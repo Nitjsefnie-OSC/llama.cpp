@@ -692,3 +692,8 @@ Experiment026 independent design review confirms complete-K ordering and fragmen
 Added `scripts/bonsai-server-compare.py` for complete JSONL validation, exact cross-condition requests/tokens/content, pooled measured medians and optional per-prompt speed/regression gates. It excludes warmups, recomputes rates from counts/timing durations, rejects incomplete or duplicate artifacts, records source hashes and preserves failure details in an exclusive JSON result. Eleven CPU test methods passed both implementation and independent review, then again after integration. The independent four-run023 smoke recomputed all recorded gains with six measured samples per condition/size.
 
 Applied the same tool to025 fresh control/candidate A. It passed correctness and returned exit1 specifically for the3% decode performance gate; both prompt sizes failed. Full comparison is `cuda-service-k5120-comparison.json`. No benchmark was rerun to generate these analysis artifacts.
+
+
+### Ingestion acceptance gates added to comparison tool
+
+The comparator now also supports paired --min-ingest-gain-pct and --max-decode-regression-pct, mutually exclusive with the existing decode-focused pair. Existing positional API and JSON fields remain available; results identify the selected axis. Incomplete/mixed/nonfinite/negative thresholds are rejected, and every prompt must pass both bounds. Fifteen CPU tests pass, including the original11, boundary/failure/undefined-decode cases and output artifacts. Independent review passed; the023 four-artifact smoke passes the2% ingest /2% output-regression gate. Experiment026 will use this same tool with its preregistered thresholds.

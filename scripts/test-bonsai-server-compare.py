@@ -89,6 +89,66 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(result["correctness"], "passed")
         self.assertEqual([p["gate_passed"] for p in result["prompts"]], [True, False])
 
+    def test_ingest_gate_boundary_and_metadata(self):
+        a, b = self.pair(ingest=(125, 125, 125), decode=(98, 98, 98))
+        result = COMPARE.compare([a], [b], min_ingest_gain=25, max_decode_regression=2)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["gate"], {"requested": True, "passed": True, "axis": "ingest",
+                         "min_decode_gain_pct": None, "max_ingest_regression_pct": None,
+                         "min_ingest_gain_pct": 25, "max_decode_regression_pct": 2})
+        self.assertEqual(COMPARE.compare([a], [b], min_ingest_gain=25.000001,
+                         max_decode_regression=2)["status"], "failed")
+        self.assertEqual(COMPARE.compare([a], [b], min_ingest_gain=25,
+                         max_decode_regression=1.999999)["status"], "failed")
+        self.assertEqual(COMPARE.compare([a], [b])["gate"]["axis"], None)
+        self.assertEqual(COMPARE.compare([b], [a], 0, 100)["gate"]["axis"], "decode")
+
+    def test_ingest_gate_checks_each_prompt_and_defined_decode(self):
+        a, _ = self.pair()
+        data = artifact("bad-second", ingest=(110, 110, 110))
+        for row in data:
+            if row["kind"] == "trial" and row["prompt_tokens"] == 8:
+                row["response"]["timings"].update(predicted_ms=2000/97, predicted_per_second=97)
+        bad = self.write("bad-second", data)
+        result = COMPARE.compare([a], [bad], min_ingest_gain=2, max_decode_regression=2)
+        self.assertEqual(result["correctness"], "passed")
+        self.assertEqual([p["gate_passed"] for p in result["prompts"]], [True, False])
+        a1 = self.write("one-a", artifact("one-a", tokens=1))
+        b1 = self.write("one-b", artifact("one-b", tokens=1))
+        self.assertEqual(COMPARE.compare([a1], [b1], min_ingest_gain=0,
+                         max_decode_regression=100)["status"], "failed")
+
+    def test_ingest_gate_rejects_partial_mixed_and_invalid_thresholds(self):
+        a, b = self.pair()
+        cases = [{"min_ingest_gain": 2}, {"max_decode_regression": 2},
+                 {"min_decode_gain": 3, "max_ingest_regression": 2, "min_ingest_gain": 2, "max_decode_regression": 2},
+                 {"min_decode_gain": 3, "max_decode_regression": 2},
+                 {"max_ingest_regression": 2, "min_ingest_gain": 2}]
+        for key in ("min_ingest_gain", "max_decode_regression"):
+            for invalid in (-1, float("nan"), float("inf"), True):
+                cases.append({"min_ingest_gain": 2, "max_decode_regression": 2, key: invalid})
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs), self.assertRaises(COMPARE.InvalidRun):
+                COMPARE.compare([a], [b], **kwargs)
+
+    def test_ingest_gate_cli(self):
+        a, b = self.pair(ingest=(110, 110, 110))
+        common = ["--baseline", str(a), "--candidate", str(b)]
+        cases = [(0, ["--min-ingest-gain-pct", "2", "--max-decode-regression-pct", "2"]),
+                 (1, ["--min-ingest-gain-pct", "2"]),
+                 (1, ["--min-ingest-gain-pct", "2", "--max-decode-regression-pct", "2", "--min-decode-gain-pct", "3", "--max-ingest-regression-pct", "2"]),
+                 (1, ["--min-ingest-gain-pct", "nan", "--max-decode-regression-pct", "2"])]
+        for i, (code, options) in enumerate(cases):
+            output = self.root / f"cli-{i}.json"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(COMPARE.main(common + options + ["--output", str(output)]), code)
+            result = json.loads(output.read_text())
+            self.assertEqual(result["status"], "passed" if code == 0 else "failed")
+            if code == 0:
+                self.assertEqual(result["gate"]["axis"], "ingest")
+            else:
+                self.assertIn("error", result)
+
     def test_malformed_and_truncated_json(self):
         for index, text in enumerate(("", "{}\n", '{"kind":', '[]\n', '{"kind":"metadata","kind":"metadata"}\n')):
             path = self.root / f"bad-{index}.jsonl"
