@@ -1113,3 +1113,10 @@ The reverse pair passed unchanged gates: output+3.751%/+3.108% at512/4096, inges
 Evidence: both comparison-b.json and comparison-abba.json, four measured artifacts and separate conditioning artifacts under cuda-service-gdn-indexed-state-*. Retain for repeatable output improvement with no material ingest regression; the512 ingest increase is observed, not a demonstrated prefill-kernel optimization. Independent final review passed the exact V3 diff, runtime hashes/counts, independently queried SQLite mechanism evidence, and all768 checked growth/atomic logprob values matching exactly. Its pending ABBA condition is now satisfied.
 
 After inspecting idle baseline18904, stopped it and deployed tools/llamacpp-cuda-gdn-indexed-state through the canonical helper. All11 stable-path hashes match cuda-gdn-indexed-state-binary-hashes.json. Restored the original supervisor byte-for-byte (SHA25654af3284fda7d5a446f5df8c7a82121444576fff96283d7eea21dbf7362142be) and restarted the normal scheduled service, healthy PID23780. Maintenance artifacts remain preserved. This candidate is the new rollback/performance baseline for032; old lazy-reserve snapshot remains available. Three validated wins total.
+
+
+### 032 build passed; static gate pending
+
+Applied the exact reviewed032patch on top of accepted030commit10bd19e6d8d709d4750bfb8da86c1e9046fbf53f. Canonical CUDA12.9.1/SM86 Release build completed exit0 in58.98s; full logs and command/exit/timing are cuda-build-pq2-block-index.txt and .exit.json. All11 files copied exclusively and hash-verified in tools/llamacpp-cuda-pq2-block-index; manifest cuda-pq2-block-index-binary-hashes.json, CUDA SHA25672d45521bb02021bce2967660e96e47c98d6dcfef4a095f02f200780f8b353d0. Independent assembly/resource checks against the exact newly retained030DLL are pending before any GPU testing. The normal service remains on all11 verified030hashes.
+
+After030landed, its author worktree was removed only after verifying all seven modified files matched committed10bd19e6 byte-for-byte, no untracked/ignored files existed, and the preservedV3patch hash matched. Its branch/logs/patch and the separate032worktree remain.
