@@ -1143,3 +1143,17 @@ Unchanged static gates: at least six net dynamic address instructions saved per 
 ### 033 source candidate prepared
 
 Patch cuda-pq2-unsigned-index-source.patch SHA256192069d4ad5b3c7737f5f27578bad5d2a950be1021fdcc694f4f8b421cbdeabd changes only four loop-index lines (+4/-3), with all other mmvq.cu bytes unchanged. Author verified16,384 lane/K ordered sequences and6,303,744 pointer/index comparisons including padded strides and boundary rows within the existing signed helper-index domain. Existing dispatch whole-block assertion and only two kernel launches remain. Diffcheck passed; independent source review pending. No033compilation orGPUtest yet.
+
+
+### 033 source review and build passed; static gate pending
+
+Independent source review passed the four-line patch, including unsigned promotions and unchanged valid signed helper-index domain. Applied after its clean check. Canonical CUDA12.9.1/SM86 Release build completed exit0 in56.50s, preserved in cuda-build-pq2-unsigned-index.txt and .exit.json. Snapshot tools/llamacpp-cuda-pq2-unsigned-index contains11 exclusively copied, hash-verified files; manifest cuda-pq2-unsigned-index-binary-hashes.json, CUDA SHA256d615f13b8bffb0aa9b7bc8ac6e508690c9700cf860320817dc12160358c3f1d0. The exact030baselineSASS is reused unchanged for independent static comparison. No033GPU/runtime test has started. The normal service still matches all11 accepted030hashes.
+
+
+### 033 rejected at the unchanged static gate
+
+Independent SASS review found ordinary registers42->47 and fused37->40, both exceeding the preregistered ceilings. Net address savings were6.5 instructions/chunk ordinary (13 per pair) and3 fused, the latter below six. Loop instructions172->153 per ordinary pair and138->135 fused; code5120->4608 and3968->4096 bytes. Zero stack/local/spills and preserved loop expansion, load counts/widths/cache policy, ordered DP4A/FP32, tails and32x4 geometry passed inspection.
+
+Unsigned arithmetic removed signed corrections, but fused generated code again maintained four64-bit weight pointers with eight increment/carry instructions each iteration, offsetting the intended savings and increasing live state. Reject beforeGPU/service testing; this is not a measured throughput regression. Preserved candidateSASS, command/hash metadata, comparison and gate evidence are cuda-pq2-unsigned-index-sass-candidate.*, cuda-pq2-unsigned-index-sass-comparison.json and cuda-pq2-unsigned-index-static-gates.json.
+
+Reversed the exact033patch and verified mmvq.cu equals retainedHEAD. All source/build/snapshot/assembly artifacts remain preserved. Three wins remain retained; the normal service stays on030. Next discovery focuses on prefill, first checking prior017/020evidence to avoid repeating an already-falsified GDN change.
