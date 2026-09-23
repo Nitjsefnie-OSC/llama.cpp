@@ -1264,3 +1264,14 @@ Independent specification and quality review passed with no source blockers. The
 Applied the exact reviewed patch and built through scripts/bonsai-cuda-build.ps1 with CUDA12.9.1, SM86 Release and the unchanged build settings. Build exit 0 after 244.813 seconds; full output and command/timing receipt are cuda-build-pq2-i64-j128.txt and .exit.json. All eleven snapshot files were exclusively copied and hash-verified in tools/llamacpp-cuda-pq2-i64-j128. Manifest: cuda-pq2-i64-j128-binary-hashes.json; CUDA DLL SHA256 021012a901fad63b54cad3f4cf413f5125ca374696ab3321c845603aeb047e80.
 
 Independent compiled checking now compares all 64 retained generic PQ2 MMQ kernels and both ordinary/fused PQ2 decode kernels against exact accepted030. The new kernel must still meet <=128 registers and zero stack/local/spills. Dynamic shared memory is established from host-launch/source layout evidence, separately from cuobjdump's static SHARED field. No 035 GPU/service test has run; accepted030 remains served normally.
+
+
+### 035 rejected at the compiled resource gate; no GPU or service test
+
+The dedicated I64/J128 kernel uses 160 registers per thread, exceeding the pre-registered 128 limit for the two-resident-block hypothesis. Stack, local storage and static shared storage are zero; no local load/store spill instructions appear. The reviewed host launch supplies 38,400 dynamic shared bytes and 256 threads. Passing the shared-memory budget alone does not establish the proposed residency.
+
+The separate retained-path gate also failed: 24 of 64 generic PQ2 MMQ bodies differ under the checker's strict normalization. Some differences are relocated call operands, but others are substantive: J128 instruction slots 5520 -> 5504, J112 registers 252 -> 254, and J96 registers 224 -> 222. Both ordinary/fused PQ2 decode kernels remain instruction/resource-identical at 42/37 registers. No claim of fallback throughput regression is made without measurement; compiled invariance itself was the pre-registered requirement.
+
+Full baseline/candidate SASS, parsed inventories and provenance are cuda-pq2-i64-j128-static-*. The checker (SHA256 1ee60dbbc1ccd6e6a89c51c3895dfb6f705a20a71e0ea9fcdfe6039d2c2b6ff9) passed 15 synthetic checks; all extraction commands exited 0 and the gate correctly exited 1. Verdict: cuda-pq2-i64-j128-static-gates.json. No register cap was forced and no GPU/native/service benchmark was run after this failure.
+
+Reversed the exact preserved patch and verified all root source files match HEAD. Accepted030 remains healthy at the unchanged stable service path, with all eleven binary hashes reverified. The failed candidate source worktree, patch, snapshot and all proof/build/disassembly artifacts remain preserved. Retained win count remains three. Further work must address actual register lifetime and avoid changing generic helper instantiations before this mechanism can be reconsidered.
