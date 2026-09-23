@@ -4446,6 +4446,16 @@ struct test_gated_delta_net : public test_case {
     }
 };
 
+// Full attention and final-state reference checks for the full-batch column specialization.
+struct test_gated_delta_net_cols2_full_batch : public test_gated_delta_net {
+    test_gated_delta_net_cols2_full_batch(int64_t tokens, bool raw = true, bool permuted = false,
+                                        int64_t sequences = 1, int64_t snapshots = 1)
+        : test_gated_delta_net(GGML_TYPE_F32, 16, 128, tokens, sequences, 3, permuted, false,
+                              snapshots, false, -1, raw) {}
+
+    std::string op_desc(ggml_tensor *) override { return "GATED_DELTA_NET_COLS2_FULL_BATCH"; }
+};
+
 // Indexed K=1 reads with the normal GDN -> CPY cache-write fusion.
 struct test_gated_delta_net_indexed_cache : public test_gated_delta_net {
     const int32_t first_row;
@@ -10429,6 +10439,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             }
         }
     }
+
+    for (int64_t tokens : {507, 508, 511, 512, 513}) {
+        test_cases.emplace_back(new test_gated_delta_net_cols2_full_batch(tokens));
+    }
+    test_cases.emplace_back(new test_gated_delta_net_cols2_full_batch(512, false));             // activated gates
+    test_cases.emplace_back(new test_gated_delta_net_cols2_full_batch(512, true, true));        // strided V heads/tokens
+    test_cases.emplace_back(new test_gated_delta_net_cols2_full_batch(512, true, false, 2));     // multiple sequences
+    test_cases.emplace_back(new test_gated_delta_net_cols2_full_batch(512, true, false, 1, 2));  // rollback snapshots
 
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 1, 1));
     for (bool raw : {false, true}) {

@@ -1452,3 +1452,21 @@ Review rehashed accepted030 DLL/SASS/metadata and confirmed eight ordinary paire
 ### 038 native-runner preparation passed CPU checks
 
 The prepared runner requires future actual038 CUDA DLL, test executable and test-source hashes plus the actual build-base ancestor, allowing037 if retained. It runs exactly101 PQ2 passes with33 known unsupported identities,44 fusion and8 FFN passes; no I64 selector or zero-match smoke is counted. Fourteen CPU-only regression checks passed and its validation function is AST-identical to the verified036 validator. No native command or compiled hash binding occurred. Artifacts: cuda-pq2-unsigned-payload-runtime-ready.json, runtime-check.py and runtime-synthetic.json. Runner SHA256a133a5101308cf8e7c527f8b1fbaf04537c1f314c8a8e13f01c5b38b1a26a72b.
+
+
+### 037 accepted: fourth retained win, full-batch GDN ingestion
+
+Fresh reverse pair passed:512 ingest414.906824 to416.014951 (+0.267078%), output36.848289 to36.849312 (+0.002775%);4096 ingest514.210398 to536.484973 (+4.331802%), output34.537767 to34.591928 (+0.156817%). Both individual comparisons and pooled ABBA pass every prospective threshold. Each process had separate conditioning and five measured requests per prompt, with no excluded or selectively repeated measured trials.
+
+| Prompt | Retained030 ingest | Accepted037 ingest | Ingest change | Retained030 output | Accepted037 output | Output change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 412.960191 | 417.746064 | +1.158919% | 36.801566 | 36.842565 | +0.111404% |
+| 4096 | 514.859053 | 536.198446 | +4.144706% | 34.534014 | 34.562791 | +0.083331% |
+
+Independent final source/specification, quality and retention review passed. It recomputed all40 measured trials, verified all64 measured/warmup/conditioning responses and16,384 output tokens exactly, and confirmed unchanged188416 context, four slots,256 outputs and all-core affinity. All three deployment receipts match all eleven snapshot files (33 hash comparisons), and timestamps follow ABBA order. Exact two-file source patch matches SHA25698c44c81f062943f39c858c4f18e57e024ce59b65d7cf9e32b02d2ac7a6974a1.
+
+Retain for long-prompt ingestion with actual full512 batches; do not claim a short-prompt kernel improvement or decode gain. Both4K pairs improved (+3.880006% and+4.331802%). Snapshot tools/llamacpp-cuda-gdn-cols2-full-batch, CUDA SHA256055a0177f3d1b276a42c30ba9a642272a817f5f67045eb34f507daa8296938be, becomes the next experiment baseline. Artifacts: cuda-service-gdn-cols2-full-batch-comparison-{a,b,abba}.json and original command receipts/JSONLs.
+
+Evidence limitations remain: per-process executable/hash checks were contemporaneous root console evidence, while the original deployment receipts persist source/target/file hashes. CandidateB restarted the unchanged candidate deployment. cuda-gdn-cols2-full-batch-timing-provenance.json is an explicitly retrospective evidence index, not an invented historical hash measurement. Matched CUPTI graph-metadata warnings remain recorded and complete profiler collection is not asserted. These limits do not contradict the exact recorded mechanism, correctness or repeated service gain.
+
+Retained win count is now four. Normal-service deployment/restoration is the next operation;038 remains source-only until this integration completes.

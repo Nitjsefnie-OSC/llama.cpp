@@ -11,7 +11,7 @@ static __global__ void gdn_precompute_exp(const float * g, float * g_exp, int64_
 // RAW: beta and g arrive pre-activation (ggml_gated_delta_net_set_raw_gates); the kernel applies
 // sigmoid(beta) and raw_a[h] * softplus(g + raw_dt_bias[h]) with the unary kernels' formulas.
 // G_PRECOMPUTED: g already holds exp(g) (GB10 long-prompt path); only used with RAW == false.
-template <int S_v, bool KDA, bool keep_rs_t, bool RAW, bool G_PRECOMPUTED, bool INDEXED_STATE = false>
+template <int S_v, bool KDA, bool keep_rs_t, bool RAW, bool G_PRECOMPUTED, bool INDEXED_STATE = false, int COLS_OVERRIDE = 0>
 __global__ void __launch_bounds__((ggml_cuda_get_physical_warp_size() < S_v ? ggml_cuda_get_physical_warp_size() : S_v) * 4, 2)
 gated_delta_net_cuda(const float * q,
                                      const float * k,
@@ -42,12 +42,17 @@ gated_delta_net_cuda(const float * q,
                                      int           K,
                                      const int32_t * state_rows) {
     static_assert(!INDEXED_STATE || (S_v == 128 && !KDA && !keep_rs_t && !G_PRECOMPUTED), "unsupported indexed state specialization");
+    static_assert(COLS_OVERRIDE == 0 ||
+        (COLS_OVERRIDE == 2 && S_v == 128 && !KDA && !keep_rs_t && RAW && !G_PRECOMPUTED && !INDEXED_STATE),
+        "unsupported column specialization");
     const uint32_t h_idx    = blockIdx.x;
     const uint32_t sequence = blockIdx.y;
     // Each warp owns one or more columns, using warp-level primitives to reduce across rows.
     const int      lane     = threadIdx.x;
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_DGX_SPARK
     constexpr int cols_per_warp = S_v == 128 && !KDA ? 4 : 1;
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
+    constexpr int cols_per_warp = COLS_OVERRIDE == 2 ? 2 : 1;
 #else
     constexpr int cols_per_warp = 1;
 #endif
@@ -232,6 +237,18 @@ static void launch_gated_delta_net(
 
     const uint3 neqk1_magic = init_fastdiv_values(neqk1);
     const uint3 rq3_magic   = init_fastdiv_values(rq3);
+
+    if constexpr (RAW && !KDA && !keep_rs_t && !G_PRECOMPUTED && !INDEXED_STATE) {
+        if (cc == 860 && ggml_cuda_highest_compiled_arch(cc) == 860 && S_v == 128 && H == 48 &&
+            n_seqs == 1 && K == 1 && n_tokens == 512) {
+            const ggml_cuda_kernel_launch_params cols2_params(dim3(48, 1, 16), dim3(32, 4), 0, stream);
+            ggml_cuda_kernel_launch(gated_delta_net_cuda<128, false, false, true, false, false, 2>, cols2_params,
+                q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d, H,
+                n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K, state_rows);
+            return;
+        }
+    }
 
     const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(grid_dims, block_dims, 0, stream);
     switch (S_v) {
