@@ -1191,3 +1191,42 @@ Independent compiled inspection passed: new COLS2 uses 56 registers (limit 64), 
 After inspection of ordinary wrapper/launcher/server 10160/5620/23780 and four idle slots, authorized maintenance stopped only those processes; inspection034.json and stopped034.json preserve the evidence. The original supervisor and accepted030 snapshot remain available for rollback.
 
 The prepared runner completed all five commands with exit 0: construction smoke, 9/9 new prefill references, 49/49 retained GDN references with 14 explicit unsupported cases, 10/10 indexed-cache cases, and the exact fresh-process replay case. The latter retained direct/capture/replay/replay with a stable graph key/UID. Full native output, hashes, commands, identities and graph events are cuda-gdn-cols2-prefill-runtime*. Candidate service PID14176 is healthy under Nsight for dedicated-kernel dispatch verification; strict service correctness and uninstrumented speed gates remain pending.
+
+
+### 034 strict service correctness passed; first timing pair started
+
+The service capture completed with start/benchmark/stop exit 0; artifacts cuda-service-nsys034-prefill.* and cuda-nsys034-* preserve the full evidence. Offline mechanism analysis remains pending. Growth checks at 512/4096/16384/512 and the atomic four-slot request both passed exact requests/tokens/content and the unchanged logprob tolerance against accepted030 references. Artifacts: cuda-gdn-cols2-prefill-growth-correctness.jsonl and cuda-gdn-cols2-prefill-atomic-correctness.jsonl.
+
+After inspecting idle diagnostic PID14176, stopped it; the Nsight launch parent then returned 4294967295/tool1 due to intentional target termination, distinct from the successful capture. No profiler process remains. Deployed and hash-verified all 11 accepted030 files, started fresh baseline PID10132, and began separate conditioning plus three measured requests per prompt. The supervisor maintenance prefix still holds ordinary restarts; original supervisor and accepted snapshot remain preserved for restoration after the experiment.
+
+
+### 034 actual-service dispatch and unchanged decode confirmed
+
+Offline export and mechanism analysis passed. Both 508-token prefills execute exactly 48 new COLS2 kernels at grid48x1x16/block32x4; both four-token tails retain the default column specialization. All final 30 decode replays retain 48 indexed/default GDN kernels, 1935 total kernels, zero target state gathers and zero 3MiB D2D state writes. Relative to accepted030, only the intended 48 prefill GDN substitutions change per full prefill. Copy size/direction inventories match exactly, with no D2D activity.
+
+Descriptive GDN timing from separate traces: warmup034 total162.523ms/median2.430ms versus030 total236.812/3.578; measured034 total146.581/2.430 versus030 total238.005/3.345. These are not acceptance gains. Early-node outliers remain unexplained. Recorded execution submissions reconcile, with3870 capture-only launches accounting for two1935-node captures and no CUDA API failures; the generic collection warning remains preserved. Evidence: cuda-nsys034-service-analysis.json and cuda-service-nsys034-prefill.sqlite plus export receipts.
+
+
+### 034 first uninstrumented pair passed; reverse pair pending
+
+Independent final review passed the exact two-file diff, runtime hashes/counts, separate SQLite verification and all eight growth/atomic responses. All 768 checked probability values match accepted030 exactly (maximum absolute difference 0.0). Final retention remains conditional on throughput.
+
+Fresh baseline10132 and candidate24992 each completed separate conditioning and three measured requests per prompt, with profiling/debug flags off. Exact requests/tokens/content match. Pair A passed the original ingest/output gates:
+
+| Prompt | Retained ingest | Candidate ingest | Ingest change | Retained output | Candidate output | Output change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 412.133 | 447.546 | +8.593% | 36.332 | 36.566 | +0.644% |
+| 4096 | 513.013 | 535.905 | +4.462% | 34.371 | 34.435 | +0.188% |
+
+Artifacts: cuda-service-gdn-cols2-prefill-{control,candidate}-a.jsonl, separate conditioning files and comparison-a.json. Candidate11184 starts the reverse pair from a fresh process using the already deployed, reverified stable-path candidate files. No fourth win is accepted until the reverse/pooled checks pass.
+
+
+### 035 pre-registered compile-only hypothesis: PQ2 I64/J128 MMQ
+
+Read-only follow-up found that experiment 006 tested I128/J64 and 007 tested I256/J128 with 512 threads; neither falsifies I64/J128 with 256 threads. The accepted service trace contains 400 PQ2 MMQ kernels totaling 645.112 ms (63.64% of the measured 508-token prefill kernel sum). Existing I128/J128 uses 254 registers and 57,856 shared bytes per block, preventing two such resident blocks on SM86. Evidence: cuda-next-mmq-discovery-trace.py/.json and the preserved 006/007 patches.
+
+Hypothesis: I64/J128 with four 16-row groups and two warps per group can reduce accumulators from 64 to 32 per thread and shared storage to 38,400 bytes. Map row base to (warp/2)*16 and column offset to (warp%2)*8, retaining the 16x8 MMA primitive, K256, quantization and ascending per-output K/FP32 operation order. Changing only the tile configuration is invalid: the existing eight-warp accumulation/writeback mapping covers 128 rows. Both mappings and matching host/device tile selection must change together.
+
+Scope: a separate worktree, SM86 PQ2 J128 and the observed full-K service shapes only; preserve fallback specializations. The proposed first compile gate is at most 128 registers per thread, exactly 38,400 shared bytes, zero stack/local/spills, complete unique output coverage, and unchanged per-output arithmetic order. Any failure rejects before GPU testing. These constraints permit two-block residency but do not prove actual residency or a speed improvement. Costs include twice as many row tiles/CTAs and approximately twice the logical activation staging; weight staging and arithmetic are approximately unchanged. No hardware-counter claim is possible under the recorded 031 counter-permission failure.
+
+Source preparation and CPU layout proof may proceed during 034 measurements; compilation and GPU tests must wait. After independent source/static approval, require CPU references and strict service correctness before an uninstrumented ABBA against the then-retained build. Acceptance remains at least 2% ingest gain at BOTH 512/4096 and no more than 2% output regression, with exact requests/tokens/content and unchanged capacity/settings. No throughput win is claimed for 035.
