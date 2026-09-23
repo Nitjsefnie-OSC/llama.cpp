@@ -1585,3 +1585,19 @@ The isolated source candidate is based on22d3b3e1cacd8299b274a667de2fd6c992e98bb
 CPU proofs passed12 shape combinations,4,608 unique staging words and8,192 output owners, with padding, alignment, ordering and negative-control checks. Shared allocation remains38,400 bytes. Pinned PTX defines no per-group copy-count limit for this interface; this does not establish that18 copies can be physically outstanding without stalls. No preparation failure occurred. Artifacts: cuda-pq2-i64-async-stage-{enumeration,replacement,proof,source-check,final-checks}.json and reusable proof scripts.
 
 Independent source review and offline static-checker preparation are running. No040 compilation, GPU execution or service change has occurred.039 baseline conditioning/measurement finished with exit0; candidate-A now runs through the service on fresh PID10132, with all eleven backing-file hashes and nine loaded module paths saved before timing. Performance conclusions remain pending the original gates.
+
+
+### 039 rejected: instruction/register improvement did not produce the required service gain
+
+Fresh baseline PID12856 and candidate PID10132 each completed separate conditioning reps1 and measurement reps5 at512/4096 with256 output tokens; all four benchmark commands exited0. Exact request/token/content comparison passed, but canonical comparison-a exited1 on the original performance gate.
+
+| Prompt | Accepted037 ingest | Candidate039 ingest | Ingest change | Accepted037 output | Candidate039 output | Output change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 401.627218 | 406.258604 | +1.153156% | 36.810682 | 36.871066 | +0.164040% |
+| 4096 | 534.895325 | 534.317995 | -0.107933% | 34.605715 | 34.685294 | +0.229957% |
+
+Both output gains miss the prospective >=2% threshold. Reject immediately; no reverse pair, pooled acceptance, excluded trials or selective rerun. Fewer compiled instructions and40 versus42 ordinary registers are verified mechanisms, not a retained speed win. These results do not isolate the remaining hardware bottleneck. Artifacts: cuda-service-pq2-zero-lut-{control,candidate}-a.jsonl, separate conditioning files, contemporaneous per-process provenance, complete stdout/stderr/exit receipts and comparison-a.{json,exit.json}. Independent evidence audit remains pending.
+
+After separately inspecting idle candidate PID10132, stopped it and restored accepted037 through the canonical deployment script. Receipt bonsai-deploy-20260923T060721005-48e3244da8624ae2bc1d61d760eec940.json. Verified exact root patch equality, reversed039 and confirmed clean source. Preserved the isolated039 worktree, patch, compiled snapshot and every successful/failed artifact. Restored the original supervisor bytes and restarted the scheduled service. Fresh PID23820 is healthy on the correct model with four idle188416-context slots; all eleven backing-file hashes and supervisor SHA match accepted references. Receipt cuda-pq2-zero-lut-restored-service.json explicitly records Session0 inspection limits.
+
+Retained win count remains four.040 baseline is now definitively accepted037. Source review and CPU-only static/native tooling preparation continue; no040 build or GPU execution has occurred.
