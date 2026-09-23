@@ -124,35 +124,74 @@ def load_run(path):
         raise InvalidRun(f"{path}: {error}") from error
 
 
+def prompt_gain_overrides(values):
+    if values is None:
+        return None
+    overrides = {}
+    for value in values:
+        try:
+            prompt, pct = value.split("=")
+            require(prompt.isascii() and prompt.isdecimal(), f"Invalid prompt threshold: {value}")
+            prompt, pct = int(prompt), float(pct)
+            require(integer(prompt, 1) and number(pct, minimum=-math.inf), f"Invalid prompt threshold: {value}")
+            require(prompt not in overrides, f"Duplicate prompt threshold: {prompt}")
+        except (ValueError, OverflowError) as error:
+            raise InvalidRun(f"Invalid --min-ingest-gain-pct-for {value}: {error}") from error
+        overrides[prompt] = pct
+    return overrides
+
+
 def compare(baseline, candidate, min_decode_gain=None, max_ingest_regression=None, *,
-            min_ingest_gain=None, max_decode_regression=None):
+            min_ingest_gain=None, max_decode_regression=None, min_ingest_gain_for=None):
     require(bool(baseline) and bool(candidate), "Both conditions require at least one artifact")
+    require(min_ingest_gain_for is None or (isinstance(min_ingest_gain_for, dict) and min_ingest_gain_for and
+            all(integer(size, 1) and number(pct, minimum=-math.inf) for size, pct in min_ingest_gain_for.items())),
+            "Prompt thresholds must map positive integer sizes to finite gains")
+    overrides = min_ingest_gain_for or {}
     require((min_decode_gain is None) == (max_ingest_regression is None), "Both performance thresholds are required together")
     require((min_ingest_gain is None) == (max_decode_regression is None), "Both ingest performance thresholds are required together")
     require(min_decode_gain is None or min_ingest_gain is None, "Decode and ingest gate pairs are mutually exclusive")
-    thresholds = (min_decode_gain, max_ingest_regression, min_ingest_gain, max_decode_regression)
+    thresholds = (min_decode_gain, max_ingest_regression, max_decode_regression)
     require(all(value is None or number(value) for value in thresholds), "Thresholds must be finite and nonnegative")
+    require(min_ingest_gain is None or number(min_ingest_gain, minimum=-math.inf if overrides else 0),
+            "Ingest gain must be finite and nonnegative unless prompt overrides are supplied")
     axis = "decode" if min_decode_gain is not None else "ingest" if min_ingest_gain is not None else None
+    require(not overrides or axis == "ingest", "Prompt overrides require the ingest performance gate pair")
     gain, regression = (min_decode_gain, max_ingest_regression) if axis == "decode" else (min_ingest_gain, max_decode_regression)
     paths = [Path(p).resolve() for p in [*baseline, *candidate]]
     require(len(set(paths)) == len(paths), "Duplicate artifact path")
     runs = [load_run(path) for path in paths]
     require(len({r["sha256"] for r in runs}) == len(runs), "Duplicate artifact contents")
     reference = runs[0]
+    require(set(overrides) <= set(reference["config"]["sizes"]),
+            f"Unknown prompt threshold sizes: {sorted(set(overrides) - set(reference['config']['sizes']))}")
     for run in runs[1:]:
         require(run["config"] == reference["config"], f"{run['path']}: benchmark configuration differs")
-        for key, entry in run["trials"].items():
-            actual, expected = entry["row"], reference["trials"][key]["row"]
-            where = f"{run['path']}: prompt={key[0]}, repetition={key[1]}"
-            require(actual["request"] == expected["request"], f"{where}: request differs")
-            for field in ("tokens", "content"):
-                if actual["response"][field] != expected["response"][field]:
-                    raise OutputMismatch(f"{where}: output {field} differs from {reference['path']}")
+    gate = {"requested": axis is not None, "passed": None, "axis": axis,
+            "min_decode_gain_pct": min_decode_gain, "max_ingest_regression_pct": max_ingest_regression,
+            "min_ingest_gain_pct": min_ingest_gain, "max_decode_regression_pct": max_decode_regression}
+    if overrides:
+        gate.update(thresholds_resolved=True,
+                    min_ingest_gain_pct_for={str(size): pct for size, pct in sorted(overrides.items())},
+                    effective_prompt_thresholds={str(size): {"min_ingest_gain_pct": overrides.get(size, gain),
+                                                            "max_decode_regression_pct": max_decode_regression}
+                                                 for size in reference["config"]["sizes"]})
+    try:
+        for run in runs[1:]:
+            for key, entry in run["trials"].items():
+                actual, expected = entry["row"], reference["trials"][key]["row"]
+                where = f"{run['path']}: prompt={key[0]}, repetition={key[1]}"
+                require(actual["request"] == expected["request"], f"{where}: request differs")
+                for field in ("tokens", "content"):
+                    if actual["response"][field] != expected["response"][field]:
+                        raise OutputMismatch(f"{where}: output {field} differs from {reference['path']}")
+    except (InvalidRun, OutputMismatch) as error:
+        if overrides:
+            error.gate = gate
+        raise
     result = {"status": "passed", "correctness": "passed", "reference": reference["path"],
               "config": reference["config"], "conditions": {}, "prompts": [],
-              "gate": {"requested": axis is not None, "passed": None, "axis": axis,
-                       "min_decode_gain_pct": min_decode_gain, "max_ingest_regression_pct": max_ingest_regression,
-                       "min_ingest_gain_pct": min_ingest_gain, "max_decode_regression_pct": max_decode_regression}}
+              "gate": gate}
     groups = {"baseline": runs[:len(baseline)], "candidate": runs[len(baseline):]}
     for name, group in groups.items():
         result["conditions"][name] = [{k: run[k] for k in ("path", "sha256")} for run in group]
@@ -171,7 +210,11 @@ def compare(baseline, candidate, min_decode_gain=None, max_ingest_regression=Non
         if axis is not None:
             delta = prompt["change_pct"]
             other = "ingest" if axis == "decode" else "decode"
-            prompt["gate_passed"] = (delta["decode_tps"] is not None and delta[axis + "_tps"] >= gain and
+            prompt_gain = overrides.get(size, gain)
+            if overrides:
+                prompt["gate_thresholds"] = {"min_ingest_gain_pct": prompt_gain,
+                                             "max_decode_regression_pct": max_decode_regression}
+            prompt["gate_passed"] = (delta["decode_tps"] is not None and delta[axis + "_tps"] >= prompt_gain and
                                      delta[other + "_tps"] >= -regression)
         result["prompts"].append(prompt)
     if axis is not None:
@@ -191,6 +234,8 @@ def main(argv=None):
     parser.add_argument("--max-ingest-regression-pct", type=float)
     parser.add_argument("--min-ingest-gain-pct", type=float)
     parser.add_argument("--max-decode-regression-pct", type=float)
+    parser.add_argument("--min-ingest-gain-pct-for", action="append", metavar="PROMPT=PCT",
+                        help="override one prompt's signed ingest gain floor; repeatable, requires the ingest gate pair")
     args = parser.parse_args(argv)
     output = None
     try:
@@ -199,11 +244,21 @@ def main(argv=None):
             output = args.output.open("x", encoding="utf-8")
         try:
             result = compare(args.baseline, args.candidate, args.min_decode_gain_pct, args.max_ingest_regression_pct,
-                             min_ingest_gain=args.min_ingest_gain_pct, max_decode_regression=args.max_decode_regression_pct)
+                             min_ingest_gain=args.min_ingest_gain_pct, max_decode_regression=args.max_decode_regression_pct,
+                             min_ingest_gain_for=prompt_gain_overrides(args.min_ingest_gain_pct_for))
         except (InvalidRun, OutputMismatch) as error:
             result = {"status": "failed", "correctness": "failed" if isinstance(error, OutputMismatch) else "not_established",
                       "baseline": [str(p) for p in args.baseline], "candidate": [str(p) for p in args.candidate],
                       "error": {"type": type(error).__name__, "message": str(error)}}
+            if args.min_ingest_gain_pct_for is not None:
+                result["gate"] = getattr(error, "gate", {"thresholds_resolved": False})
+        if args.min_ingest_gain_pct_for is not None:
+            # Text keeps invalid non-finite arguments serializable in failure artifacts.
+            result["threshold_arguments"] = {
+                key: None if getattr(args, key) is None else str(getattr(args, key))
+                for key in ("min_decode_gain_pct", "max_ingest_regression_pct",
+                            "min_ingest_gain_pct", "max_decode_regression_pct")}
+            result["threshold_arguments"]["min_ingest_gain_pct_for"] = args.min_ingest_gain_pct_for
         encoded = json.dumps(result, indent=2, allow_nan=False) + "\n"
         if output:
             output.write(encoded)

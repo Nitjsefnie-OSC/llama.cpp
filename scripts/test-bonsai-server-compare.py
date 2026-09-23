@@ -149,6 +149,159 @@ class CompareTests(unittest.TestCase):
             else:
                 self.assertIn("error", result)
 
+    def prompt_pair(self, tag, ingest=(100, 103), decode=(100, 100), tokens=3):
+        baseline = self.write(tag + "-a", artifact(tag + "-a", sizes=(512, 4096), tokens=tokens))
+        rows = artifact(tag + "-b", sizes=(512, 4096), tokens=tokens)
+        for row in rows:
+            if row["kind"] == "trial" and not row["warmup"]:
+                index = (512, 4096).index(row["prompt_tokens"])
+                timings = row["response"]["timings"]
+                timings.update(prompt_ms=1000 * row["prompt_tokens"] / ingest[index],
+                               prompt_per_second=ingest[index])
+                if tokens > 1:
+                    timings.update(predicted_ms=1000 * (tokens - 1) / decode[index],
+                                   predicted_per_second=decode[index])
+        return baseline, self.write(tag + "-b", rows)
+
+    def test_prompt_ingest_cli_pass_and_each_failure(self):
+        scenarios = [("pass", (100, 103), (100, 100), [True, True]),
+                     ("long-slow", (100, 101), (100, 100), [True, False]),
+                     ("short-slow", (97, 103), (100, 100), [False, True]),
+                     ("short-decode", (100, 103), (97, 100), [False, True]),
+                     ("long-decode", (100, 103), (100, 97), [True, False])]
+        for tag, ingest, decode, flags in scenarios:
+            a, b = self.prompt_pair(tag, ingest, decode)
+            output = self.root / (tag + ".json")
+            args = ["--baseline", str(a), "--candidate", str(b), "--output", str(output),
+                    "--min-ingest-gain-pct", "-2", "--min-ingest-gain-pct-for", "4096=2",
+                    "--max-decode-regression-pct", "2"]
+            with self.subTest(tag=tag), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(COMPARE.main(args), 0 if all(flags) else 1)
+            result = json.loads(output.read_text())
+            self.assertEqual(result["correctness"], "passed")
+            self.assertEqual(result["gate"]["passed"], all(flags))
+            self.assertEqual([p["gate_passed"] for p in result["prompts"]], flags)
+            self.assertEqual(result["gate"]["min_ingest_gain_pct"], -2)
+            self.assertEqual(result["gate"]["min_ingest_gain_pct_for"], {"4096": 2})
+            self.assertEqual(result["threshold_arguments"], {
+                "min_decode_gain_pct": None, "max_ingest_regression_pct": None,
+                "min_ingest_gain_pct": "-2.0", "max_decode_regression_pct": "2.0",
+                "min_ingest_gain_pct_for": ["4096=2"]})
+            self.assertEqual([p["gate_thresholds"] for p in result["prompts"]], [
+                {"min_ingest_gain_pct": -2, "max_decode_regression_pct": 2},
+                {"min_ingest_gain_pct": 2, "max_decode_regression_pct": 2}])
+
+    def test_prompt_ingest_cli_repeatable_and_boundary(self):
+        a, b = self.prompt_pair("boundary", (98, 125), (98, 98))
+        output = self.root / "boundary.json"
+        args = ["--baseline", str(a), "--candidate", str(b), "--output", str(output),
+                "--min-ingest-gain-pct", "100", "--max-decode-regression-pct", "2",
+                "--min-ingest-gain-pct-for", "4096=25", "--min-ingest-gain-pct-for", "512=-2"]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(COMPARE.main(args), 0)
+        result = json.loads(output.read_text())
+        self.assertEqual(result["gate"]["min_ingest_gain_pct_for"], {"512": -2, "4096": 25})
+        self.assertEqual(result["gate"]["min_ingest_gain_pct"], 100)
+
+    def test_prompt_ingest_cli_invalid_overrides_are_retained(self):
+        a, b = self.prompt_pair("invalid")
+        valid_pair = ["--min-ingest-gain-pct", "-2", "--max-decode-regression-pct", "2"]
+        cases = [valid_pair + ["--min-ingest-gain-pct-for=" + value] for value in
+                 ("unknown=2", "8192=2", "0=2", "-1=2", "4.5=2", "4096", "4096=", "=2",
+                  "4096=2=3", "4096=nan", "4096=inf", "4096=-inf", "4096=oops")]
+        cases.extend([valid_pair + ["--min-ingest-gain-pct-for", "4096=2", "--min-ingest-gain-pct-for", "4096=3"],
+                      valid_pair + ["--min-ingest-gain-pct-for", "4096=2", "--min-ingest-gain-pct-for", "04096=2"],
+                      ["--min-ingest-gain-pct-for", "4096=2"],
+                      ["--min-ingest-gain-pct", "-2", "--min-ingest-gain-pct-for", "4096=2"],
+                      ["--min-ingest-gain-pct", "nan", "--max-decode-regression-pct", "2",
+                       "--min-ingest-gain-pct-for", "4096=2"],
+                      ["--min-decode-gain-pct", "2", "--max-ingest-regression-pct", "2",
+                       "--min-ingest-gain-pct-for", "4096=2"]])
+        for index, flags in enumerate(cases):
+            output = self.root / f"invalid-{index}.json"
+            with self.subTest(flags=flags), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(COMPARE.main(["--baseline", str(a), "--candidate", str(b),
+                                               "--output", str(output)] + flags), 1)
+            result = json.loads(output.read_text())
+            self.assertEqual(result["error"]["type"], "InvalidRun")
+            self.assertEqual(set(result["threshold_arguments"]), {
+                "min_decode_gain_pct", "max_ingest_regression_pct", "min_ingest_gain_pct",
+                "max_decode_regression_pct", "min_ingest_gain_pct_for"})
+            self.assertTrue(result["threshold_arguments"]["min_ingest_gain_pct_for"])
+            self.assertEqual(result["gate"], {"thresholds_resolved": False})
+
+    def test_prompt_ingest_failure_retains_resolved_thresholds(self):
+        a, b = self.prompt_pair("provenance")
+        original = [json.loads(line) for line in b.read_text().splitlines()]
+        for field in ("tokens", "content", "config"):
+            rows = copy.deepcopy(original)
+            if field == "config":
+                rows[0]["props"]["model_alias"] = "other"
+            else:
+                row = next(r for r in rows if r["kind"] == "trial")
+                row["response"][field] = [901, 902, 903] if field == "tokens" else "changed"
+                row["content_sha256"] = hashlib.sha256(row["response"]["content"].encode()).hexdigest()
+            bad = self.write("provenance-" + field, rows)
+            output = self.root / ("provenance-" + field + ".json")
+            args = ["--baseline", str(a), "--candidate", str(bad), "--output", str(output),
+                    "--min-ingest-gain-pct", "-2", "--min-ingest-gain-pct-for", "4096=2",
+                    "--max-decode-regression-pct", "2"]
+            with self.subTest(field=field), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(COMPARE.main(args), 1)
+            result = json.loads(output.read_text())
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["threshold_arguments"]["min_ingest_gain_pct_for"], ["4096=2"])
+            if field == "config":
+                self.assertEqual(result["gate"], {"thresholds_resolved": False})
+                continue
+            self.assertEqual(result["correctness"], "failed")
+            self.assertEqual(result["error"]["type"], "OutputMismatch")
+            self.assertTrue(result["gate"]["thresholds_resolved"])
+            self.assertIsNone(result["gate"]["passed"])
+            self.assertEqual(result["gate"]["min_ingest_gain_pct"], -2)
+            self.assertEqual(result["gate"]["min_ingest_gain_pct_for"], {"4096": 2})
+            self.assertEqual(result["gate"]["effective_prompt_thresholds"], {
+                "512": {"min_ingest_gain_pct": -2, "max_decode_regression_pct": 2},
+                "4096": {"min_ingest_gain_pct": 2, "max_decode_regression_pct": 2}})
+
+    def test_prompt_ingest_api_validation_and_undefined_decode(self):
+        a, b = self.prompt_pair("api")
+        for invalid in ({8192: 2}, {4096: float("nan")}, {4096: float("inf")}, {4096: True},
+                        {"4096": 2}, {0: 2}, {True: 2}, ["4096=2"]):
+            with self.subTest(invalid=invalid), self.assertRaises(COMPARE.InvalidRun):
+                COMPARE.compare([a], [b], min_ingest_gain=-2, max_decode_regression=2,
+                                min_ingest_gain_for=invalid)
+        for kwargs in ({}, {"min_decode_gain": 2, "max_ingest_regression": 2},
+                       {"min_ingest_gain": -2}, {"min_ingest_gain": float("nan"), "max_decode_regression": 2},
+                       {"min_ingest_gain": -2, "max_decode_regression": -1}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(COMPARE.InvalidRun):
+                COMPARE.compare([a], [b], min_ingest_gain_for={4096: 2}, **kwargs)
+        a1, b1 = self.prompt_pair("one-token", tokens=1)
+        self.assertEqual(COMPARE.compare([a1], [b1], min_ingest_gain=-2, max_decode_regression=2,
+                                        min_ingest_gain_for={4096: 2})["status"], "failed")
+
+    def test_prompt_ingest_preserves_all_prompt_correctness(self):
+        a, b = self.prompt_pair("correctness")
+        original = [json.loads(line) for line in b.read_text().splitlines()]
+        for size in (512, 4096):
+            for field in ("tokens", "content"):
+                rows = copy.deepcopy(original)
+                row = next(r for r in rows if r["kind"] == "trial" and r["prompt_tokens"] == size)
+                row["response"][field] = [901, 902, 903] if field == "tokens" else "changed"
+                row["content_sha256"] = hashlib.sha256(row["response"]["content"].encode()).hexdigest()
+                bad = self.write(f"bad-{size}-{field}", rows)
+                with self.subTest(size=size, field=field), self.assertRaises(COMPARE.OutputMismatch):
+                    COMPARE.compare([a], [bad], min_ingest_gain=-2, max_decode_regression=2,
+                                    min_ingest_gain_for={4096: 2})
+
+    def test_prompt_ingest_absence_keeps_legacy_output(self):
+        a, b = self.pair(ingest=(103, 103, 103))
+        old = COMPARE.compare([a], [b], min_ingest_gain=2, max_decode_regression=2)
+        self.assertEqual(old, COMPARE.compare([a], [b], min_ingest_gain=2, max_decode_regression=2,
+                                             min_ingest_gain_for=None))
+        self.assertNotIn("min_ingest_gain_pct_for", old["gate"])
+        self.assertTrue(all("gate_thresholds" not in p for p in old["prompts"]))
+
     def test_malformed_and_truncated_json(self):
         for index, text in enumerate(("", "{}\n", '{"kind":', '[]\n', '{"kind":"metadata","kind":"metadata"}\n')):
             path = self.root / f"bad-{index}.jsonl"
