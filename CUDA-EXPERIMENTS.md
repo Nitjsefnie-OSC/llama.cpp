@@ -1470,3 +1470,6 @@ Retain for long-prompt ingestion with actual full512 batches; do not claim a sho
 Evidence limitations remain: per-process executable/hash checks were contemporaneous root console evidence, while the original deployment receipts persist source/target/file hashes. CandidateB restarted the unchanged candidate deployment. cuda-gdn-cols2-full-batch-timing-provenance.json is an explicitly retrospective evidence index, not an invented historical hash measurement. Matched CUPTI graph-metadata warnings remain recorded and complete profiler collection is not asserted. These limits do not contradict the exact recorded mechanism, correctness or repeated service gain.
 
 Retained win count is now four. Normal-service deployment/restoration is the next operation;038 remains source-only until this integration completes.
+
+
+037 integrated and pushed as e801f710edbdffe422c638a650129758c30939c8. Normal service is restored on accepted037: health ok, correct model, four idle188416-context slots, all eleven runtime hashes and original supervisor hash verified. Server PID10128; receipt cuda-gdn-cols2-full-batch-restored-service.json. After verifying exact committed source equality, no extra files and preserved patch/branch/snapshot, removed the accepted candidate temporary worktree. Rejected candidates and all experiment artifacts remain preserved.
