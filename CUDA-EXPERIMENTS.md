@@ -1304,3 +1304,12 @@ The four-file candidate adds a private mmq-pq2-i64.cu/.cuh translation unit, a s
 The initial export's two new files used CRLF, and git diff --check reported trailing-whitespace errors. The initial combined shell command incorrectly ended on git diff --stat and returned 0, so its inner Git exit status was not retained. The subsequent Python export returned 1 after asserting the failed check; its numeric inner Git status was not printed and no receipt was written. It had already preserved cuda-pq2-i64-stage-lifetime-source.patch. V2 normalizes only those files to LF; behavior, guards and tests are unchanged. Initial and V2 CPU proof/source-check commands all exited 0, and final standalone diff check/export exited 0. Both patches and all proofs remain preserved.
 
 Independent review is checking the source. Existing CMake GLOB includes the new CUDA file only after configuration; canonical build must rerun configuration and confirm the translation unit appears in generated Ninja rules. Resource, compiled-order/invariance, native and service gates remain untested. No 036 build or GPU work has occurred.
+
+
+### 036 independent source review and canonical build passed
+
+Independent specification/quality review passed. All three private helper bodies match the035 SM86 specializations token-for-token after fixing constants; the only kernel-body change is the intended second-copy pragma. First staging, MMA/K order, indexing, barriers, writeback, guards and allocation behavior are unchanged. Declaration/definition/call agree, non-SM86 execution falls back, and the test file matches reviewed035's 21 cases.
+
+The canonical wrapper reconfigured CMake and built successfully in 241.188 seconds. Generated Ninja and the compiler's [12/240] mmq-pq2-i64.cu.obj step confirm the new translation unit was included; receipt cuda-pq2-i64-stage-lifetime-build-inclusion.json. Three unused-variable warnings (I at line72, nwarps/I at lines159/160) in the fixed private helpers remain preserved in the build log. Full command/timing/exit0: cuda-build-pq2-i64-stage-lifetime.txt and .exit.json.
+
+All eleven files were exclusively copied and hash-verified in tools/llamacpp-cuda-pq2-i64-stage-lifetime, manifest cuda-pq2-i64-stage-lifetime-binary-hashes.json. CUDA DLL SHA256 c73c928fd73b7fa921e68682bda145456c07684c9b0b2c653bfac36f30e2ad7b. Independent static resource/invariance and compiled staging/order analysis is running using the preserved030 baseline. No 036 GPU/service test has run; accepted030 remains served.
