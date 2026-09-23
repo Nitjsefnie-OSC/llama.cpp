@@ -1427,3 +1427,23 @@ Stopped inspected idle diagnostic PID24476, deployed and verified all eleven030 
 Candidate source is preserved in cuda-pq2-unsigned-payload-source.patch, SHA2568591b395d053885333c6223ce452bcbb3035187d1f54ab6e04aee07514b4a456, based on b1a9528578baee4da2ab6856ecc5f26b60cad1c9. Only mmvq.cu changes (+42/-2): a private helper and the two specialized calls. The generic vecdotq helper and remaining mmvq source are byte-identical. No new native cases were added because existing101 PQ2/33 unsupported,44 fusion and8 FFN cases cover the intended dispatch, alongside the new exhaustive codec proof.
 
 Reproducible CPU proof covered65,536 packed words and524,288 coefficients twice, with the same patch hash and no preparation failures. Artifacts: cuda-pq2-unsigned-payload-proof.py, proof.json, verify2-proof.json, discovery-sass.{txt,json}, enumeration and final-check receipts. Independent source review and compiled-checker preparation are running. No038 build, GPU execution, source integration or throughput measurement has occurred.
+
+
+### 038 compiled-checker preparation: synthetic failure corrected before use
+
+The CPU-only checker now requires an explicit exact baseline/candidate binary binding and inventories90 PQ2-related kernels:64 MMQ/fixup,16 generic MMVQ,one MoE,four get_rows,three dequantize and two target warp kernels. All88 non-target instruction bodies/resources must match. Verified030 cached disassembly covers66 bodies, leaving24 to extract later; verified037 cache covers two PQ2 bodies, leaving88. No extraction, compilation or GPU command ran during037 service timing.
+
+The first fault-injection test caught missing tail-prefix lookup screening. V1 and its failed result remain preserved; V2 corrected it and passed25 CPU fault tests. Helper cuda-pq2-unsigned-payload-static-check-v2.py SHA256669fe93c00e4dda498ee3ad2fe23f1d5760f2f362a8aa9bde6c24b630cdec062; preparation evidence cuda-pq2-unsigned-payload-static-prepare2-{provenance,tests}.json. Passing target instruction/register/spill/load/lookup/math/loop screens produces REQUIRES_SEMANTIC_REVIEW, not automatic semantic approval: physical-register dependencies, pointer identity and ordered accumulation require independent operand review of the actual compiled candidate.
+
+
+### 037 first uninstrumented pair passed; reverse pair required
+
+Fresh030 PID22016 and037 PID6508 each completed separate conditioning and five measured requests per prompt with exit0. Exact request/token/content comparison passed. First pair:512 ingest411.013558 to419.477177 (+2.059207%), output36.797678 to36.835818 (+0.103646%);4096 ingest515.524382 to535.526762 (+3.880006%), output34.530260 to34.502275 (-0.081047%). Both prospective per-prompt gates passed. The short-request difference is an observation, not evidence of a changed short-prompt kernel. Artifacts: cuda-service-gdn-cols2-full-batch-{control,candidate}-a.jsonl, their separate conditioning files/receipts, and comparison-a.json (exit0).
+
+After separate inspection of idle PID6508, stopped it and started a fresh037 process PID12580 with all eleven snapshot hashes verified. Candidate-B conditioning/measurement is running; fresh control-B and both reverse/pooled gates remain required. No fourth win is accepted yet.
+
+### 038 independent source and exhaustive codec review passed
+
+Independent specification/quality review verified the exact one-file patch and baseline reconstruction. It independently exhausted all65,536 words/524,288 coefficients, including32,768 negative signed interpretations, against the direct codec oracle {-1,0,1,2}. Every coefficient matches. All sixteen two-byte payload offsets remain aligned within each34-byte block; the existing type-punning and endianness assumptions are unchanged. Lookup permutations, signed DP4A order and floating-point scaling are preserved; maximum chunk magnitude is8192. Outer accumulation, reduction, fusion, guards and geometry remain exact.
+
+Review rehashed accepted030 DLL/SASS/metadata and confirmed eight ordinary paired-loop and four fused-loop sign extensions, four per logical chunk each. The subsequent0x7777 selector masks support the duplicated-table equivalence. No source blocker was found; private helper duplication isolates the experiment. Approval is safe-to-compile only, after037 timing ends. All compiled/native/service gates remain unresolved.
