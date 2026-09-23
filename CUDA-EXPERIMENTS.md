@@ -1420,3 +1420,10 @@ Strict independent review verified all eight growth/atomic responses,128 tokens 
 Profiler limitation: each fresh trace contains5,571 CUPTI GetGraphId and5,571 GetGraphNodeId severity3 errors, all inside successful cudaGraphExecUpdate intervals, plus the generic collection warning. Both traces have the same count, all runtime APIs succeed and final30 replay signatures contain all1935 expected kernels. Recorded submissions/inventories reconcile, but complete profiler collection cannot be asserted. Diagnostic evidence: cuda-nsys037-profiler-diagnostic-review.json. This matched profiler metadata problem is preserved separately from actual CUDA runtime failures.
 
 Stopped inspected idle diagnostic PID24476, deployed and verified all eleven030 files, and started fresh uninstrumented baseline PID22016. The prospective separate conditioning plus five measured requests per size has started. No fourth retained win is claimed.
+
+
+### 038 isolated source prepared; exhaustive packed-word proof passed
+
+Candidate source is preserved in cuda-pq2-unsigned-payload-source.patch, SHA2568591b395d053885333c6223ce452bcbb3035187d1f54ab6e04aee07514b4a456, based on b1a9528578baee4da2ab6856ecc5f26b60cad1c9. Only mmvq.cu changes (+42/-2): a private helper and the two specialized calls. The generic vecdotq helper and remaining mmvq source are byte-identical. No new native cases were added because existing101 PQ2/33 unsupported,44 fusion and8 FFN cases cover the intended dispatch, alongside the new exhaustive codec proof.
+
+Reproducible CPU proof covered65,536 packed words and524,288 coefficients twice, with the same patch hash and no preparation failures. Artifacts: cuda-pq2-unsigned-payload-proof.py, proof.json, verify2-proof.json, discovery-sass.{txt,json}, enumeration and final-check receipts. Independent source review and compiled-checker preparation are running. No038 build, GPU execution, source integration or throughput measurement has occurred.
