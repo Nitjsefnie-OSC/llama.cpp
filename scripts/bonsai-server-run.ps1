@@ -5,12 +5,16 @@ param(
     [int]$Port = 8090,
     [string]$CudaTimingLog,
     [string]$CudaGraphStatsLog,
-    [ValidateRange(1, 512)][int]$UBatch = 512
+    [ValidateRange(1, 512)][int]$UBatch = 512,
+    [ValidateRange(0, 5)][int]$CudaLogVerbosity = 4
 )
 
 $ErrorActionPreference = 'Stop'
 if ($CudaTimingLog -and $CudaGraphStatsLog) {
     throw 'CudaTimingLog and CudaGraphStatsLog are mutually exclusive'
+}
+if ($PSBoundParameters.ContainsKey('CudaLogVerbosity') -and -not ($CudaTimingLog -or $CudaGraphStatsLog)) {
+    throw 'CudaLogVerbosity requires CudaTimingLog or CudaGraphStatsLog'
 }
 if (-not $Root) { $Root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent }
 $BinaryDir = (Resolve-Path -LiteralPath $BinaryDir).Path
@@ -31,7 +35,7 @@ if ($cudaLog) {
     $logReservation = [System.IO.File]::Open($cudaLog, [System.IO.FileMode]::CreateNew)
     $logReservation.Dispose()
     # Backend INFO records use the common logger's TRACE threshold.
-    $serverArgs += @('--log-file', $cudaLog, '--log-verbosity', '4')
+    $serverArgs += @('--log-file', $cudaLog, '--log-verbosity', [string]$CudaLogVerbosity)
 }
 $stableBinaryDir = Join-Path $Root 'tools\llamacpp-prism'
 if (-not [string]::Equals($BinaryDir.TrimEnd('\', '/'), $stableBinaryDir.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase)) {
