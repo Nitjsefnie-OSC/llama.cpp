@@ -1473,3 +1473,10 @@ Retained win count is now four. Normal-service deployment/restoration is the nex
 
 
 037 integrated and pushed as e801f710edbdffe422c638a650129758c30939c8. Normal service is restored on accepted037: health ok, correct model, four idle188416-context slots, all eleven runtime hashes and original supervisor hash verified. Server PID10128; receipt cuda-gdn-cols2-full-batch-restored-service.json. After verifying exact committed source equality, no extra files and preserved patch/branch/snapshot, removed the accepted candidate temporary worktree. Rejected candidates and all experiment artifacts remain preserved.
+
+
+### 038 canonical build passed on retained037 base
+
+Applied the reviewed one-file patch on clean retained base6d2111fd9fb618b3c28884c5976cebc4b111cfb7; only mmvq.cu changed. Build/source/test binding is preserved in cuda-pq2-unsigned-payload-build-source.json. Canonical configuration/build exited0 in57.472 seconds, full output cuda-build-pq2-unsigned-payload.txt and .exit.json.
+
+All eleven files were exclusively copied and hash-verified in tools/llamacpp-cuda-pq2-unsigned-payload, manifest cuda-pq2-unsigned-payload-binary-hashes.json. CUDA SHA25615284ff3361890e1ac11de31c7ed3290e68f8287b37c3d6646d1052bbef88e5d; test executable SHA256fda38f489f417b354e665e1dd5681a6d7aba6c323ae83f844f3810e8453e8d21; test source SHA256e9e01e08ab7446025244b0f540d43a18d85efdad7316e2f8b97e6c557716eb04. Offline static comparison and independent target dataflow review are running against exact accepted037. Runtime preparation may bind hashes only; no038 GPU/native/service test is authorized before static approval. Normal service remains accepted037.
