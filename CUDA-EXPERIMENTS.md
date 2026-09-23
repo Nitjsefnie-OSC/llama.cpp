@@ -1230,3 +1230,21 @@ Hypothesis: I64/J128 with four 16-row groups and two warps per group can reduce 
 Scope: a separate worktree, SM86 PQ2 J128 and the observed full-K service shapes only; preserve fallback specializations. The proposed first compile gate is at most 128 registers per thread, exactly 38,400 shared bytes, zero stack/local/spills, complete unique output coverage, and unchanged per-output arithmetic order. Any failure rejects before GPU testing. These constraints permit two-block residency but do not prove actual residency or a speed improvement. Costs include twice as many row tiles/CTAs and approximately twice the logical activation staging; weight staging and arithmetic are approximately unchanged. No hardware-counter claim is possible under the recorded 031 counter-permission failure.
 
 Source preparation and CPU layout proof may proceed during 034 measurements; compilation and GPU tests must wait. After independent source/static approval, require CPU references and strict service correctness before an uninstrumented ABBA against the then-retained build. Acceptance remains at least 2% ingest gain at BOTH 512/4096 and no more than 2% output regression, with exact requests/tokens/content and unchanged capacity/settings. No throughput win is claimed for 035.
+
+
+### 034 rejected: reverse-pair 512-token ingest failed repeatability gate
+
+The fresh candidate B and retained030 control B completed conditioning plus three measured requests per prompt, with all exact request/token/content checks passing. Reverse-pair results:
+
+| Prompt | Retained ingest | Candidate ingest | Ingest change | Retained output | Candidate output | Output change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 420.396 | 416.744 | -0.869% | 36.744 | 36.816 | +0.196% |
+| 4096 | 517.103 | 536.366 | +3.725% | 34.673 | 34.078 | -1.716% |
+
+The pooled ABBA comparison (six measured requests per prompt and condition) passed: 512-token ingest 415.289 -> 436.109 tok/s (+5.013%), 4K ingest 516.250 -> 536.135 (+3.852%); output changed +0.321% and -0.145%. This does not override the failed reverse-pair gate: 512-token ingest changed -0.869%, below the pre-registered +2% requirement. The candidate is rejected and does not count as a fourth retained win. The possible average gain remains unresolved under the observed run variation; no claim of zero intrinsic kernel benefit is made.
+
+Artifacts: cuda-service-gdn-cols2-prefill-{control,candidate}-b.jsonl, corresponding conditioning files, comparison-b.json (exit 1), comparison-abba.json (exit 0), alongside preserved pair A. No selective rerun or relaxed threshold was used to turn this failure into acceptance.
+
+After inspecting idle control PID24608, stopped it and verified that all 11 stable-path files already match retained030. Reversed only the exact SHA-verified 034 source patch; both source files now match HEAD. Restored the exact original supervisor (SHA256 54af3284fda7d5a446f5df8c7a82121444576fff96283d7eea21dbf7362142be) and started LlamaSupervisor. The maintenance prefix, isolated candidate worktree, binary snapshot, patch, build output, native tests, service traces and every benchmark remain preserved. Normal-service health verification follows. The retained win count remains three.
+
+Normal-service restoration verified: HTTP health ok, correct model, four idle slots each with context 188416, all 11 retained030 stable-file hashes exact, and original supervisor hash exact. Receipt: cuda-gdn-cols2-prefill-restored-service.json. New normal server PID23780 has parent20532 (Session0 cmdline unavailable to the interactive account); PID reuse alone is not treated as process identity evidence.
