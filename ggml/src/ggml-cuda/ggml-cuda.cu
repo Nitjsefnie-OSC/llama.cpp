@@ -4676,6 +4676,236 @@ static void ggml_cuda_debug_ffn_fusion(const ggml_backend_cuda_context * ctx, co
                   (unsigned long long) graph_seq, (unsigned long long) cgraph->uid, ctx->device, cc, candidates, eligible);
 }
 
+// Experiment044: host graph inspection only; no execution or fusion decision uses these results.
+static bool ggml_cuda_swiglu_fwht_debug_enabled() {
+    static const bool enabled = [] {
+        const char * value = std::getenv("DEBUG_CUDA_SWIGLU_FWHT");
+        return value && strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+static const char * swiglu_fwht_fact(int value) {
+    return value < 0 ? "unchecked" : value ? "true" : "false";
+}
+
+static int swiglu_fwht_all(int a, int b) {
+    return a == 0 || b == 0 ? 0 : a < 0 || b < 0 ? -1 : 1;
+}
+
+// Diagnostic equivalent of ggml.c's private ggml_is_constant; no public API change.
+static bool swiglu_fwht_is_constant(const ggml_tensor * tensor) {
+    return tensor->buffer != nullptr &&
+           ggml_backend_buffer_get_usage(tensor->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
+           (tensor->flags & GGML_TENSOR_FLAG_PARAM) == 0;
+}
+
+struct swiglu_fwht_tensor_fact {
+    const ggml_tensor * tensor = nullptr;
+    int metadata = -1;
+    int contiguous = -1;
+    int buffer = -1;
+    int range = -1;
+    uintptr_t begin = 0;
+    uintptr_t end = 0;
+};
+
+// Validate the exact F32 size arithmetic used by ggml_nbytes before any allocator callback.
+// Normal CUDA F32 buffers use ggml_nbytes, except FLASH_ATTN_EXT, which is excluded here.
+static swiglu_fwht_tensor_fact swiglu_fwht_tensor_facts(const ggml_tensor * t, int device) {
+    swiglu_fwht_tensor_fact f;
+    f.tensor = t;
+    if (!t) { return f; }
+    f.buffer = t->buffer && ggml_backend_buffer_get_type(t->buffer) == ggml_backend_cuda_buffer_type(device);
+    if (t->type != GGML_TYPE_F32) { return f; }
+    f.metadata = 0;
+    uint64_t elements = 1;
+    uint64_t bytes = sizeof(float);
+    for (int d = 0; d < GGML_MAX_DIMS; ++d) {
+        if (t->ne[d] <= 0 || uint64_t(t->ne[d]) > uint64_t(INT64_MAX)/sizeof(float)/elements) { return f; }
+        elements *= uint64_t(t->ne[d]);
+        const uint64_t count = uint64_t(t->ne[d] - 1);
+        if (count && t->nb[d] > (uint64_t(INT64_MAX) - bytes)/count) { return f; }
+        bytes += count*t->nb[d];
+    }
+    f.metadata = 1;
+    f.contiguous = ggml_is_contiguous(t);
+    if (!f.buffer || t->op == GGML_OP_FLASH_ATTN_EXT) { return f; }
+    f.range = 0;
+    if (!t->data) { return f; }
+    const uintptr_t begin = (uintptr_t) t->data;
+    if (begin > uintptr_t(INT64_MAX) || bytes > uint64_t(INT64_MAX) - begin) { return f; }
+    f.begin = begin;
+    f.end = begin + uintptr_t(bytes);
+    f.range = 1;
+    return f;
+}
+
+static int swiglu_fwht_overlap(const swiglu_fwht_tensor_fact & a, const swiglu_fwht_tensor_fact & b) {
+    if (a.range != 1 || b.range != 1) { return -1; }
+    return a.begin < b.end && b.begin < a.end;
+}
+
+// Bound malformed/cyclic view chains before the canonical predicate traverses them.
+static bool swiglu_fwht_views_safe(const ggml_tensor * tensor, int limit) {
+    const ggml_tensor * view = tensor->view_src;
+    for (int depth = 0; view; ++depth) {
+        if (depth >= limit) { return false; }
+        view = view->view_src;
+    }
+    return true;
+}
+
+struct swiglu_fwht_eligibility {
+    swiglu_fwht_tensor_fact tensors[8]; // glu, sign product, reshape, output, gate, up, signs, Hadamard
+    bool links = false;
+    bool plain = false;
+    bool shape = false;
+    int f32 = -1;
+    int contiguous = -1;
+    int allocated = -1;
+    bool views_safe = false;
+    bool extra_sources = false;
+    int can_fuse = -1;
+    int ranges = -1;
+    int overlap[4] = {-1, -1, -1, -1};
+    const char * reason = nullptr;
+};
+
+// One pure eligibility predicate. The caller has matched the four op tags and valid node indices.
+static swiglu_fwht_eligibility swiglu_fwht_inspect_candidate(
+        const ggml_backend_cuda_context * ctx, const ggml_cgraph * graph, int index, int cc, int compiled_cc, bool disabled) {
+    swiglu_fwht_eligibility f;
+    const ggml_tensor * glu = graph->nodes[index];
+    const ggml_tensor * mul = graph->nodes[index + 1];
+    const ggml_tensor * reshape = graph->nodes[index + 2];
+    const ggml_tensor * mm = graph->nodes[index + 3];
+    const ggml_tensor * ts[] = {glu, mul, reshape, mm, glu->src[0], glu->src[1], mul->src[1], mm->src[0]};
+    f.f32 = f.contiguous = f.allocated = true;
+    f.views_safe = true;
+    for (int n = 0; n < 8; ++n) {
+        f.tensors[n] = swiglu_fwht_tensor_facts(ts[n], ctx->device);
+        f.f32 = swiglu_fwht_all(f.f32, ts[n] ? int(ts[n]->type == GGML_TYPE_F32) : -1);
+        f.contiguous = swiglu_fwht_all(f.contiguous, f.tensors[n].contiguous);
+        f.allocated = swiglu_fwht_all(f.allocated, ts[n] ? int(ts[n]->data && f.tensors[n].buffer == 1) : -1);
+        if (ts[n] && !swiglu_fwht_views_safe(ts[n], graph->n_nodes)) { f.views_safe = false; }
+    }
+    // unary.cu applies SiLU to src0 and multiplies src1 for split SwiGLU.
+    f.plain = glu->src[0] && glu->src[1] && ggml_get_glu_op(glu) == GGML_GLU_OP_SWIGLU &&
+              ggml_get_op_params_i32(glu, 1) == 0;
+    f.links = mul->src[0] == glu && reshape->src[0] == mul && mm->src[1] == reshape &&
+              ggml_get_op_params_i32(mm, 1) == GGML_HINT_SRC0_IS_HADAMARD;
+    f.extra_sources = reshape->src[1] != nullptr;
+    for (int n = 0; n < 4; ++n) {
+        for (int s = 2; s < GGML_MAX_SRC; ++s) { f.extra_sources = f.extra_sources || ts[n]->src[s]; }
+    }
+    const int64_t tokens = glu->ne[1];
+    auto shape_is = [](const ggml_tensor * t, int64_t n0, int64_t n1) {
+        return t && t->ne[0] == n0 && t->ne[1] == n1 && t->ne[2] == 1 && t->ne[3] == 1;
+    };
+    // Bound tokens before forming 17*tokens, even for rejected metadata.
+    if (tokens > 0 && tokens <= INT64_MAX/17) {
+        f.shape = shape_is(glu, 17408, tokens) && shape_is(mul, 17408, tokens) &&
+            shape_is(ts[4], 17408, tokens) && shape_is(ts[5], 17408, tokens) &&
+            shape_is(ts[6], 17408, 1) && shape_is(ts[7], 1024, 1024) &&
+            shape_is(reshape, 1024, 17*tokens) && shape_is(mm, 1024, 17*tokens);
+    }
+    const ggml_op ops[] = {GGML_OP_GLU, GGML_OP_MUL, GGML_OP_RESHAPE, GGML_OP_MUL_MAT};
+    const int outputs[] = {index + 3};
+    if (f.views_safe) { f.can_fuse = ggml_can_fuse_subgraph(graph, index, 4, ops, outputs, 1); }
+    // The canonical helper evaluates ggml_nrows(first) even when is_topk_moe is false.
+    // A broken link can omit first from all actual sources, so validate it independently.
+    bool ranges_safe = f.tensors[0].metadata == 1 && f.tensors[3].range == 1;
+    // Validate EVERY actual source visited by the canonical range helper, including broken links/extra sources.
+    for (int n = 0; n < 4; ++n) {
+        for (int s = 0; s < GGML_MAX_SRC; ++s) {
+            const ggml_tensor * src = ts[n]->src[s];
+            if (src && swiglu_fwht_tensor_facts(src, ctx->device).range != 1) { ranges_safe = false; }
+        }
+    }
+    if (ranges_safe) { f.ranges = ggml_cuda_check_fusion_memory_ranges(graph, index, 4, outputs, 1); }
+    for (int n = 0; n < 4; ++n) { f.overlap[n] = swiglu_fwht_overlap(f.tensors[3], f.tensors[n + 4]); }
+    f.reason = cc != 860 || compiled_cc != 860 ? "not_sm86" :
+        disabled ? "fusion_disabled" :
+        !f.plain ? "not_plain_split_swiglu" : !f.links ? "broken_links_or_hint" :
+        f.extra_sources ? "extra_sources" : f.f32 != 1 ? "not_f32_or_missing_tensor" : !f.shape ? "different_shape" :
+        tokens != 508 && tokens != 512 ? "other_token_width" : f.contiguous != 1 ? "noncontiguous_or_invalid_metadata" :
+        f.allocated != 1 ? "unsupported_or_unallocated_buffer" : !f.views_safe ? "invalid_view_chain" :
+        f.can_fuse != 1 ? "canonical_subgraph_rejected" : f.ranges < 0 ? "unsafe_or_unchecked_range" :
+        f.ranges == 0 ? "canonical_memory_overlap" :
+        f.overlap[0] < 0 || f.overlap[1] < 0 || f.overlap[2] < 0 || f.overlap[3] < 0 ? "unchecked_external_range" :
+        f.overlap[0] ? "gate_output_overlap" : f.overlap[1] ? "up_output_overlap" :
+        f.overlap[2] ? "signs_output_overlap" : f.overlap[3] ? "hadamard_output_overlap" : "eligible";
+    return f;
+}
+
+static void ggml_cuda_debug_swiglu_fwht(const ggml_backend_cuda_context * ctx, const ggml_cgraph * graph,
+                                      const void * key, const char * mode) {
+    static std::atomic<uint64_t> sequence{0};
+    const uint64_t invocation = sequence.fetch_add(1, std::memory_order_relaxed);
+    const int cc = ggml_cuda_info().devices[ctx->device].cc;
+    const int compiled_cc = ggml_cuda_highest_compiled_arch(cc);
+    // Match the existing try_fuse switch without modifying its initialization or behavior.
+    static const bool disabled = getenv("GGML_CUDA_DISABLE_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_FUSION"));
+    int candidates = 0, eligible = 0;
+    for (int i = 0; i < graph->n_nodes && graph->n_nodes - i >= 4; ++i) {
+        const ggml_tensor * glu = graph->nodes[i];
+        if (!glu || glu->op != GGML_OP_GLU || !graph->nodes[i + 1] || !graph->nodes[i + 2] || !graph->nodes[i + 3] ||
+            graph->nodes[i + 1]->op != GGML_OP_MUL || graph->nodes[i + 2]->op != GGML_OP_RESHAPE ||
+            graph->nodes[i + 3]->op != GGML_OP_MUL_MAT) { continue; }
+        ++candidates;
+        const auto f = swiglu_fwht_inspect_candidate(ctx, graph, i, cc, compiled_cc, disabled);
+        const bool ok = strcmp(f.reason, "eligible") == 0;
+        eligible += ok;
+        GGML_LOG_INFO("CUDA_SWIGLU_FWHT,event=candidate,observation=inspection,invocation=%llu,uid=%llu,key=%p,mode=%s,"
+                      "device=%d,cc=%d,compiled_cc=%d,index=%d,tokens=%lld,eligible=%s,reason=%s,links=%s,plain=%s,"
+                      "shape=%s,f32=%s,contiguous=%s,allocated=%s,views_safe=%s,extra_sources=%s,fusion_disabled=%s,can_fuse=%s,ranges=%s,"
+                      "gate_overlap=%s,up_overlap=%s,signs_overlap=%s,hadamard_overlap=%s\n",
+                      (unsigned long long) invocation, (unsigned long long) graph->uid, key, mode, ctx->device, cc, compiled_cc,
+                      i, (long long) glu->ne[1], swiglu_fwht_fact(ok), f.reason, swiglu_fwht_fact(f.links),
+                      swiglu_fwht_fact(f.plain), swiglu_fwht_fact(f.shape), swiglu_fwht_fact(f.f32),
+                      swiglu_fwht_fact(f.contiguous), swiglu_fwht_fact(f.allocated), swiglu_fwht_fact(f.views_safe),
+                      swiglu_fwht_fact(f.extra_sources), swiglu_fwht_fact(disabled),
+                      swiglu_fwht_fact(f.can_fuse), swiglu_fwht_fact(f.ranges), swiglu_fwht_fact(f.overlap[0]),
+                      swiglu_fwht_fact(f.overlap[1]), swiglu_fwht_fact(f.overlap[2]), swiglu_fwht_fact(f.overlap[3]));
+        const char * roles[] = {"glu", "mul", "reshape", "output", "gate", "up", "signs", "hadamard"};
+        for (int n = 0; n < 8; ++n) {
+            const auto & tf = f.tensors[n];
+            const ggml_tensor * t = tf.tensor;
+            if (!t) {
+                GGML_LOG_INFO("CUDA_SWIGLU_FWHT,event=tensor,invocation=%llu,uid=%llu,index=%d,role=%s,tensor=null\n",
+                              (unsigned long long) invocation, (unsigned long long) graph->uid, i, roles[n]);
+                continue;
+            }
+            char range[80] = "unchecked";
+            if (tf.range == 1) { snprintf(range, sizeof(range), "%llu:%llu", (unsigned long long) tf.begin, (unsigned long long) tf.end); }
+            const int uses = n < 4 ? ggml_node_get_use_count(graph, i + n) : -1;
+            char use_text[32] = "unchecked";
+            if (uses >= 0) { snprintf(use_text, sizeof(use_text), "%d", uses); }
+            GGML_LOG_INFO("CUDA_SWIGLU_FWHT,event=tensor,invocation=%llu,uid=%llu,index=%d,role=%s,tensor=%p,data=%p,"
+                          "type=%d,op=%d,ne=%lld:%lld:%lld:%lld,nb=%zu:%zu:%zu:%zu,src0=%p,src1=%p,view_src=%p,"
+                          "flags=%d,uses=%s,metadata=%s,contiguous=%s,buffer=%s,range_safe=%s,range=%s\n",
+                          (unsigned long long) invocation, (unsigned long long) graph->uid, i, roles[n], (const void *) t, t->data,
+                          (int) t->type, (int) t->op, (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2],
+                          (long long) t->ne[3], t->nb[0], t->nb[1], t->nb[2], t->nb[3], (const void *) t->src[0],
+                          (const void *) t->src[1], (const void *) t->view_src, t->flags, use_text, swiglu_fwht_fact(tf.metadata),
+                          swiglu_fwht_fact(tf.contiguous), swiglu_fwht_fact(tf.buffer), swiglu_fwht_fact(tf.range), range);
+            const ggml_tensor * view = t->view_src;
+            for (int depth = 0; view && depth < graph->n_nodes; ++depth, view = view->view_src) {
+                int in_pattern = -1;
+                for (int j = 0; j < 4; ++j) { if (graph->nodes[i + j] == view) { in_pattern = i + j; } }
+                GGML_LOG_INFO("CUDA_SWIGLU_FWHT,event=view,invocation=%llu,uid=%llu,index=%d,role=%s,depth=%d,"
+                              "tensor=%p,parent=%p,constant=%s,in_pattern=%d\n",
+                              (unsigned long long) invocation, (unsigned long long) graph->uid, i, roles[n], depth,
+                              (const void *) view, (const void *) view->view_src, swiglu_fwht_fact(swiglu_fwht_is_constant(view)), in_pattern);
+            }
+        }
+    }
+    GGML_LOG_INFO("CUDA_SWIGLU_FWHT,event=graph,observation=inspection,invocation=%llu,uid=%llu,key=%p,mode=%s,"
+                  "device=%d,candidates=%d,eligible=%d,rejected=%d\n", (unsigned long long) invocation,
+                  (unsigned long long) graph->uid, key, mode, ctx->device, candidates, eligible, candidates - eligible);
+}
+
 static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
@@ -4754,6 +4984,11 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
                                   (cuda_graph_update_required ? "capture" : "replay"), stats_reason);
     }
 #endif // USE_CUDA_GRAPH
+
+    if (ggml_cuda_swiglu_fwht_debug_enabled()) {
+        ggml_cuda_debug_swiglu_fwht(cuda_ctx, cgraph, graph_key,
+                                  !use_cuda_graph ? "direct" : cuda_graph_update_required ? "capture" : "replay");
+    }
 
     if (use_cuda_graph && cuda_graph_update_required) {
 #ifdef USE_CUDA_GRAPH
