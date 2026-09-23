@@ -39,7 +39,10 @@ struct llama_memory_buffer {
 
 using llama_memory_buffers = std::map<ggml_backend_buffer_type_t, llama_memory_buffer>;
 
+struct ggml_host_trace_scope;
+
 struct llama_context {
+    void host_trace_bind(ggml_host_trace_scope & scope) const;
     // init scheduler and compute buffers, reserve worst-case graphs
     llama_context(
             const llama_model & model,
@@ -421,6 +424,10 @@ private:
     mutable int64_t t_eval_us   = 0;
 
     mutable int64_t t_compute_start_us = 0;
+    uint64_t host_trace_lifetime = 0;
+    uint64_t host_trace_attempt = 0;
+    uint64_t host_trace_ubatch = 0;
+
     mutable int64_t n_queued_tokens    = 0;
 
     mutable int32_t n_p_eval = 0; // number of tokens in eval calls for the prompt (with batch size > 1)

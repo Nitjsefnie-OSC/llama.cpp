@@ -1,4 +1,5 @@
 #include "llama-context.h"
+#include "../ggml/src/ggml-host-trace.h"
 
 #include "ggml.h"
 #include "llama-arch.h"
@@ -176,6 +177,8 @@ llama_context::llama_context(
     cvec(std::make_unique<llama_adapter_cvec>()),
     loras(std::make_unique<llama_adapter_loras>()),
     balloc(std::make_unique<llama_batch_allocr>(model.hparams.n_pos_per_embd())) {
+    if (ggml_host_trace_enabled()) { host_trace_lifetime = ggml_host_trace_identity(); }
+
     // TODO warning when creating llama_context with awkward ctx size that is not a power of 2,
     //     may need to be backend-dependent
     LLAMA_LOG_INFO("%s: constructing llama_context\n", __func__);
@@ -834,7 +837,15 @@ void llama_context::sched_reserve() {
             __func__, (t_end_us - t_start_us)/1000.0, ggml_backend_sched_get_n_copies(sched.get()));
 }
 
+void llama_context::host_trace_bind(ggml_host_trace_scope & scope) const {
+    if (scope) {
+        ggml_host_trace_context(scope.record, this, host_trace_lifetime, host_trace_attempt, 0, -1, n_outputs);
+    }
+}
+
 void llama_context::synchronize() {
+    ggml_host_trace_scope host_trace("context_sync", __func__);
+    host_trace_bind(host_trace);
     if (!sched) {
         return;
     }
@@ -1617,6 +1628,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
     // set the input data for the input tensors
     {
+        ggml_host_trace_scope host_input("input_setup", "graph_set_inputs");
         //const auto t_start_us = ggml_time_us();
 
         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
@@ -1726,7 +1738,11 @@ int llama_context::encode(const llama_batch & batch_inp) {
         GGML_ASSERT(backend_res != nullptr);
         GGML_ASSERT(logits.data != nullptr);
 
-        ggml_backend_tensor_get_async(backend_res, t_logits, logits.data, 0, n_tokens*n_vocab*sizeof(float));
+        {
+            ggml_host_trace_scope host_trace("logits_enqueue", "logits_d2h");
+            if (host_trace) { ggml_host_trace_transfer(host_trace.record, n_tokens*n_vocab*sizeof(float), "d2h"); }
+            ggml_backend_tensor_get_async(backend_res, t_logits, logits.data, 0, n_tokens*n_vocab*sizeof(float));
+        }
     }
 
     // extract embeddings
@@ -1891,18 +1907,23 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
 }
 
 int llama_context::decode(const llama_batch & batch_inp) {
+    ggml_host_trace_scope host_trace("decode", "llama_context_decode");
+    if (host_trace) {
+        ++host_trace_attempt; host_trace_ubatch = 0;
+        ggml_host_trace_context(host_trace.record, this, host_trace_lifetime, host_trace_attempt, 0, batch_inp.n_tokens, -1);
+    }
     // MTP hook batches carry both token (next-token id) and embd (h_nextn row),
     // so accept either present rather than requiring exactly one.
     GGML_ASSERT(batch_inp.token || batch_inp.embd);
 
     if (!memory) {
         LLAMA_LOG_DEBUG("%s: cannot decode batches with this context (calling encode() instead)\n", __func__);
-        return encode(batch_inp);
+        return host_trace.result(encode(batch_inp));
     }
 
     if (batch_inp.n_tokens == 0) {
         LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
-        return -1;
+        return host_trace.result(-1);
     }
 
     const auto & vocab   = model.vocab;
@@ -1943,7 +1964,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
                     LLAMA_LOG_ERROR("%s: backend sampling supports at most %u outputs per sequence "
                             "(seq_id %d had %d)\n", __func__, cparams.n_outputs_max_per_seq,
                             seq_id, seq_output_count[seq_id]);
-                    return -1;
+                    return host_trace.result(-1);
                 }
             }
         }
@@ -1951,18 +1972,19 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
     if (!balloc->init(batch_inp, vocab, memory.get(), n_embd, n_seq_max, output_all)) {
         LLAMA_LOG_ERROR("%s: failed to initialize batch\n", __func__);
-        return -1;
+        return host_trace.result(-1);
     }
 
     const uint32_t n_tokens_all  = balloc->get_n_tokens();
     const uint32_t n_outputs_all = balloc->get_n_outputs();
+    if (host_trace) { ggml_host_trace_outputs(host_trace.record, n_outputs_all); }
 
     if (output_all) {
         // require that all tokens are output
         if (n_outputs_all != n_tokens_all) {
             LLAMA_LOG_ERROR("%s: pooled embedding requires that all tokens are output (n_outputs_all = %d, n_tokens_all = %d)\n",
                     __func__, n_outputs_all, n_tokens_all);
-            return -1;
+            return host_trace.result(-1);
         }
     }
 
@@ -1996,7 +2018,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
     while (true) {
         mctx = memory->init_batch(*balloc, cparams.n_ubatch, output_all);
         if (!mctx) {
-            return -2;
+            return host_trace.result(-2);
         }
 
         switch (mctx->get_status()) {
@@ -2007,7 +2029,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
                 {
                     LLAMA_LOG_ERROR("%s: unexpected memory context status: %d\n", __func__, mctx->get_status());
 
-                    return -2;
+                    return host_trace.result(-2);
                 }
             case LLAMA_MEMORY_STATUS_FAILED_PREPARE:
                 {
@@ -2023,13 +2045,13 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
                     LLAMA_LOG_WARN("%s: failed to find a memory slot for batch of size %d\n", __func__, balloc->get_n_tokens());
 
-                    return 1;
+                    return host_trace.result(1);
                 }
             case LLAMA_MEMORY_STATUS_FAILED_COMPUTE:
                 {
                     LLAMA_LOG_ERROR("%s: compute failed while preparing batch of size %d\n", __func__, balloc->get_n_tokens());
 
-                    return -2;
+                    return host_trace.result(-2);
                 }
         }
 
@@ -2039,7 +2061,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
     // reserve output buffer
     if (output_reserve(n_outputs_all) < n_outputs_all) {
         LLAMA_LOG_ERROR("%s: could not reserve space for batch with %d outputs\n", __func__, n_outputs_all);
-        return -2;
+        return host_trace.result(-2);
     };
 
     // start a new sampling transaction for this logical batch
@@ -2052,6 +2074,11 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
     do {
         const auto & ubatch = mctx->get_ubatch();
+        ggml_host_trace_scope host_ubatch("ubatch", "decode_ubatch");
+        if (host_ubatch) {
+            ggml_host_trace_context(host_ubatch.record, this, host_trace_lifetime, host_trace_attempt,
+                                    ++host_trace_ubatch, ubatch.n_tokens, -1);
+        }
 
         // count the outputs in this ubatch
         {
@@ -2067,6 +2094,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
             // needs to happen before the graph is built
             n_outputs = n_outputs_new;
+            if (host_ubatch) { ggml_host_trace_outputs(host_ubatch.record, n_outputs); }
         }
 
         ggml_status status;
@@ -2097,9 +2125,9 @@ int llama_context::decode(const llama_batch & batch_inp) {
             }
 
             switch (status) {
-                case GGML_STATUS_ABORTED:      return  2;
-                case GGML_STATUS_ALLOC_FAILED: return -2;
-                case GGML_STATUS_FAILED:       return -3;
+                case GGML_STATUS_ABORTED:      return host_trace.result(2);
+                case GGML_STATUS_ALLOC_FAILED: return host_trace.result(-2);
+                case GGML_STATUS_FAILED:       return host_trace.result(-3);
                 case GGML_STATUS_SUCCESS:      GGML_ABORT("should not happen");
             }
         }
@@ -2125,7 +2153,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
             ggml_tensor * t_cap = res->get_h_capture();
             if (!t_cap) {
                 LLAMA_LOG_ERROR("%s: target graph did not produce requested capture layers\n", __func__);
-                return -1;
+                return host_trace.result(-1);
             }
             ggml_backend_t backend_c = ggml_backend_sched_get_tensor_backend(sched.get(), t_cap);
             GGML_ASSERT(backend_c != nullptr);
@@ -2147,7 +2175,11 @@ int llama_context::decode(const llama_batch & batch_inp) {
             if (n_outputs) {
                 GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
                 GGML_ASSERT((n_outputs_prev + n_outputs)*n_vocab <= (int64_t) logits.size);
-                ggml_backend_tensor_get_async(backend_res, t_logits, logits_out, 0, n_outputs*n_vocab*sizeof(float));
+                {
+                    ggml_host_trace_scope host_trace("logits_enqueue", "logits_d2h");
+                    if (host_trace) { ggml_host_trace_transfer(host_trace.record, n_outputs*n_vocab*sizeof(float), "d2h"); }
+                    ggml_backend_tensor_get_async(backend_res, t_logits, logits_out, 0, n_outputs*n_vocab*sizeof(float));
+                }
             }
         }
 
@@ -2299,7 +2331,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
     // wait for the computation to finish (automatically done when obtaining the model output)
     //synchronize();
 
-    return 0;
+    return host_trace.result(0);
 }
 
 //
@@ -4041,16 +4073,22 @@ void llama_set_warmup(llama_context * ctx, bool warmup) {
 }
 
 void llama_synchronize(llama_context * ctx) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 }
 
 float * llama_get_logits(llama_context * ctx) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return ctx->get_logits();
 }
 
 float * llama_get_logits_ith(llama_context * ctx, int32_t i) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     float * res = nullptr;
@@ -4065,18 +4103,24 @@ float * llama_get_logits_ith(llama_context * ctx, int32_t i) {
 }
 
 float * llama_get_embeddings(llama_context * ctx) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return ctx->get_embeddings();
 }
 
 float * llama_get_embeddings_ith(llama_context * ctx, int32_t i) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return ctx->get_embeddings_ith(i);
 }
 
 float * llama_get_embeddings_seq(llama_context * ctx, llama_seq_id seq_id) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return ctx->get_embeddings_seq(seq_id);
@@ -4103,18 +4147,24 @@ llama_memory_t llama_get_memory(const struct llama_context * ctx) {
 }
 
 float * llama_get_embeddings_nextn(llama_context * ctx) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return ctx->get_embeddings_nextn();
 }
 
 float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return ctx->get_embeddings_nextn_ith(i);
 }
 
 float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return ctx->get_embeddings_layer_inp(lid);
@@ -4136,11 +4186,15 @@ uint32_t llama_get_n_capture(llama_context * ctx) {
 }
 
 float * llama_get_embeddings_capture(llama_context * ctx) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
     return ctx->get_embeddings_capture();
 }
 
 float * llama_get_embeddings_capture_ith(llama_context * ctx, int32_t i) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
     return ctx->get_embeddings_capture_ith(i);
 }
@@ -4160,42 +4214,56 @@ bool llama_set_sampler(llama_context * ctx, llama_seq_id seq_id, llama_sampler *
 }
 
 llama_token llama_get_sampled_token_ith(llama_context * ctx, int32_t i) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return ctx->get_sampled_token_ith(i);
 }
 
 float * llama_get_sampled_probs_ith(llama_context * ctx, int32_t i) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return ctx->get_sampled_probs_ith(i);
 }
 
 float * llama_get_sampled_logits_ith(llama_context * ctx, int32_t i) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return ctx->get_sampled_logits_ith(i);
 }
 
 llama_token * llama_get_sampled_candidates_ith(llama_context * ctx, int32_t i) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return const_cast<llama_token *>(ctx->get_sampled_candidates_ith(i));
 }
 
 uint32_t llama_get_sampled_candidates_count_ith(llama_context * ctx, int32_t i) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return static_cast<uint32_t>(ctx->get_sampled_candidates_count(i));
 }
 
 uint32_t llama_get_sampled_logits_count_ith(llama_context * ctx, int32_t i) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return static_cast<uint32_t>(ctx->get_sampled_logits_count(i));
 }
 
 uint32_t llama_get_sampled_probs_count_ith(llama_context * ctx, int32_t i) {
+    ggml_host_trace_scope host_output("output_getter", __func__);
+    ctx->host_trace_bind(host_output);
     ctx->synchronize();
 
     return static_cast<uint32_t>(ctx->get_sampled_probs_count(i));

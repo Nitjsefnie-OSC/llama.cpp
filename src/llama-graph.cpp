@@ -1,4 +1,5 @@
 #include "llama-graph.h"
+#include "../ggml/src/ggml-host-trace.h"
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -1378,6 +1379,7 @@ void llm_graph_result::reset() {
 
 void llm_graph_result::set_inputs(const llama_ubatch * ubatch) {
     for (auto & input : inputs) {
+        ggml_host_trace_scope host_input("input_one", "set_input");
         input->set_input(ubatch);
     }
 }

@@ -1,3 +1,4 @@
+#include "ggml-host-trace.h"
 // Note: porting this file to C++ is a work in progress
 
 #ifdef _WIN32
@@ -252,6 +253,8 @@ size_t ggml_backend_get_max_size(ggml_backend_t backend) {
 }
 
 void ggml_backend_tensor_set_async(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    ggml_host_trace_scope host_trace("tensor_upload_async", __func__);
+    if (host_trace) { ggml_host_trace_transfer(host_trace.record, size, "none"); }
     GGML_ASSERT(backend);
     GGML_ASSERT(tensor);
     GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
@@ -322,6 +325,8 @@ void ggml_backend_tensor_get_2d_async(ggml_backend_t backend, const struct ggml_
 }
 
 void ggml_backend_tensor_set(struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    ggml_host_trace_scope host_trace("tensor_upload", __func__);
+    if (host_trace) { ggml_host_trace_transfer(host_trace.record, size, "none"); }
     GGML_ASSERT(tensor);
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
     GGML_ASSERT(buf != NULL && "tensor buffer not set");
@@ -1966,6 +1971,8 @@ enum ggml_status ggml_backend_sched_graph_compute(ggml_backend_sched_t sched, st
 }
 
 enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
+    ggml_host_trace_scope host_trace("scheduler_enqueue", __func__);
+    if (host_trace) { ggml_host_trace_graph(host_trace.record, graph, graph ? graph->uid : 0, nullptr, nullptr, -1, "unbound", false); }
     GGML_ASSERT(sched);
     if (!sched->is_reset && !sched->is_alloc) {
         ggml_backend_sched_reset(sched);
@@ -1981,6 +1988,7 @@ enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sch
 }
 
 void ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {
+    ggml_host_trace_scope host_trace("scheduler_sync", __func__);
     GGML_ASSERT(sched);
     for (int i = 0; i < sched->n_backends; i++) {
         ggml_backend_synchronize(sched->backends[i]);

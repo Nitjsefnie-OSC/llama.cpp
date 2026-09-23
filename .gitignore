@@ -1569,3 +1569,6 @@
 !/tools/ui/src/lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/
 /tools/ui/src/lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/*
 !/tools/ui/src/lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/*.ts
+
+!/ggml/src/ggml-host-trace.cpp
+!/ggml/src/ggml-host-trace.h
