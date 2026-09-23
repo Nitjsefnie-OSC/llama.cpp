@@ -1342,3 +1342,30 @@ The initial validator failed with exit2 because it incorrectly required localMem
 Growth at512/4096/16384/512 and atomic four-slot checks both exited0 against accepted030. Independent final review verified all8 responses: exact requests, tokens, content, probability identities and all768 log-probability values (maximum difference0.0). Model,188416 context and four slots remain unchanged. All four source files match the reviewedV2 patch; no drift. Three unused constants are a minor cleanliness issue, not a correctness blocker. Review passes conditional on the original repeated throughput gates.
 
 After inspecting idle diagnostic PID596, stopped it. Nsight launch parent returned4294967295/tool1 due to intentional target termination, separately from successful capture/export. Deployed and verified all11 retained030 files; fresh uninstrumented control PID22432 began separate conditioning plus three measured requests per prompt. No fourth win is accepted yet.
+
+
+### 036 rejected: large actual-service ingest regression
+
+Fresh retained030 and036 candidate processes each completed conditioning plus three measured requests per prompt. All exact request/token/content checks passed, but the first uninstrumented comparison failed the original ingest gate:
+
+| Prompt | Retained ingest | Candidate ingest | Ingest change | Retained output | Candidate output | Output change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 424.944 | 297.999 | -29.873% | 36.249 | 36.848 | +1.652% |
+| 4096 | 509.682 | 346.647 | -31.988% | 33.952 | 34.556 | +1.779% |
+
+The 128-register resource result did not translate into faster service ingestion. These measurements do not isolate how much came from staging-loop overhead, lost overlap, activation rereads or actual residency. Output changes are observed pair differences, not retained decode wins. The first-pair failure rejects036; no reverse pair or selective rerun was used to rescue it. Evidence: cuda-service-pq2-i64-stage-lifetime-{control,candidate}-a.jsonl, separate conditioning files and comparison-a.json (exit1).
+
+After separate inspection of idle candidate PID2548, stopped it. Verified the two new files match the preserved isolated source and resolve inside the repository, reversed the exact V2 patch, and verified all root source files match HEAD. Candidate worktree, source patches, snapshot and all proofs/build/native/trace/benchmark artifacts remain preserved. Canonical deployment restored all11 accepted030 hashes; exact original supervisor was restored and normal restart initiated. Retained win count remains three.
+
+Normal-service restoration passed health/model checks, four idle188416-context slots, eleven retained030 binary hashes and the original supervisor hash. Receipt: cuda-pq2-i64-stage-lifetime-restored-service.json.
+
+
+### 037 pre-registered new scope: GDN COLS2 for full512 batches only
+
+Independent read-only assessment supports a distinct narrower candidate. The recorded long-request graph log cuda-service-lazy-reserve-graph-a.log shows4096 as seven512 batches followed by508+4, and16K as31x512 followed by508+4. Repeated512 requests use508+4, independently confirmed by030/034/036 Nsight captures. The checkpoint split is implemented in tools/server/server-context.cpp. Fresh long-request dispatch verification is required because the explicit long-request graph record predates034.
+
+Change034's guard to n_tokens==512, keeping actual508 batches on the retained kernel. Expected new dispatch is7x48=336 COLS2 launches per4K prefill and zero for the current512-token benchmark. This is a batch-width optimization, not a general long-request detector: other lengths, concurrency, caching, checkpoints and batch settings can change eligibility. The prior034 failure remains a rejection. Both0344K pairs improved (+4.462% and+3.725%), which motivates testing this scope but does not prove the gain survives removing508 specialization.
+
+Static gate: at most64 registers (prior56 expected), zero stack/local/spills, unchanged default GDN/PQ2 compiled paths and ordered recurrence. Nine focused native references retain widths507/508/511/512/513; move permuted-V positive and B2 fallback to512 so width alone does not exclude their intended paths. Expected two eligible and seven fallback cases. Retain indexed replay, strict growth/atomic comparisons and fresh4K dispatch/cache-write verification.
+
+Prospective service gate: BOTH fresh pairs and pooled ABBA must show >=2%4K ingest gain, <=2%512 ingest regression, and <=2% output regression at both sizes, with exact correctness/capacity/settings. Use separate conditioning and five measured requests per prompt in every fresh process, preselected to reduce the short-request variation seen in034. The shorter benchmark is now a non-regression control because its kernel dispatch is deliberately unchanged; this criterion is prospective and does not accept the rejected034 candidate. Extend the canonical comparator with an explicit per-prompt ingest threshold override, strict validation and complete threshold provenance, preserving existing defaults and all correctness checks. No new throughput result exists yet.
