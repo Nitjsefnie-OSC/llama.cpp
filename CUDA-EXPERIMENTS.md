@@ -1546,3 +1546,12 @@ The secondary operand-aware review passed for ordinary tail/paired loop and fuse
 Twenty-four CPU regression checks passed, including deliberate real-SASS mutations of same-chain ordering, operands, accumulators, pointers, selectors, scales, signed zero and control flow. The initial global ordered_math_shapes failure remains untouched; the correction compares dependency trees per output instead of globally interleaved instructions. Evidence: cuda-pq2-zero-lut-semantic-{check.py,tests.py,verdict.json} and complete test/review outputs/exit receipts. Checker SHA256 c55ea6e0eb4094d90321e112be2db5c96834c12505dd93d60bb969b4830a399e. Scope is the exact pinned SASS subset, not a general CUDA emulator.
 
 Independent verdict permits native correctness testing only. Service correctness/dispatch and both paired/pooled throughput gates remain required. Maintenance inspection of the currently idle accepted037 service has started; no039 GPU test has run yet.
+
+
+### 039 native correctness independently passed; service capture started
+
+After separate Session0 inspection and idle checks, maintenance stopped exact wrapper24812, launcher14828 and server10128. Receipts: cuda-maintenance/inspection039.json and stopped039.json. All three native commands then ran once and exited0:101 MUL_MAT passes plus33 exact expected unsupported identities,44 fusion passes and8 FFN passes. No timeouts or selective reruns. Runtime-run1 JSONL, monitor95961 completion, verification JSON and six complete raw outputs are preserved under cuda-pq2-zero-lut-runtime-run1*.
+
+Independent review recomputed all27 source/binary bindings and six raw-output hashes, verified exact identity multisets and CUDA0/backend/process footers, and reran14 CPU validator tests. It found no failure messages in the retained initialization/graph-warmup stderr. Independent trace-analyzer review also passed all146 baseline-derived evaluations and rejected seven injected faults; actual candidate trace is still required.
+
+Canonical deployment installed all eleven039 files at the stable path. Fresh diagnostic PID3432 is healthy with four idle188416-context slots. Live process enumeration verified nine loaded runtime module paths and their backing-file hashes, including ggml-cuda.dll, plus the full eleven-file snapshot. Receipt cuda-nsys039-process-provenance.json records this contemporaneous evidence and explicitly does not claim a hash of relocated module memory. The canonical short/long32-output capture has started. No uninstrumented performance result exists yet.
