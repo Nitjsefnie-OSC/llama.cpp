@@ -1168,3 +1168,26 @@ Distinct034hypothesis: compile a two-column-per-warp specialization only for run
 Trace028GDN214.330ms in1247.146ms service prefill gives roughly17.2% share and an impossible-elimination ceiling near20.8% throughput. A2% service improvement requires roughly24.5ms or11.4% of observedGDN time; excluding the unexplained58ms early-layer excess requires~15.7% of regularGDN work. Do not predict a gain from removing those unexplained outliers.
 
 Pre-registered compile gate: candidate<=64 registers, zero stack/local/spills, correctcolumncoverage, unchanged accepted decode/PQ2 instruction paths. Runtime gates: CPU references covering eligible508/512, neighboring-width fallbacks and final/cache outputs; retained indexed replay tests; strict service request/token/content/log-probability equality. Acceptance: repeated uninstrumented ABBA versus accepted030 with>=2% ingest at BOTH512/4096 and<=2% output regression, identical capacity/settings. Any failed gate rejects. Source preparation is isolated; normal service stays on030.
+
+
+### 034 baseline and source/test candidate prepared
+
+Exact retained030DLL resource extraction found rawS128 fallback/prefill53 registers and3456 code bytes, raw indexed54/3712 and activated indexed46/3584, all zero stack/local/spills. All34 SM86GDN variants and full provenance are preserved in cuda-gdn-cols2-prefill-sass-baseline.*. Prior verified PQ2 resources remain42/37.
+
+Two-file candidate (+36/-1) is preserved at cuda-gdn-cols2-prefill-source.patch, SHA2567875d657f15b0597ca673e8d5f6238b8a2ac59cacca61fbf4317a81375659df4. Root application check passed without applying it. Author reports the exact guarded two-column specialization with unchanged original launches and recurrence body. Default symbols now include COLS_OVERRIDE=0, requiring that suffix mapping in compiled invariance checks. New GATED_DELTA_NET_COLS2_PREFILL selector expects9 passes: raw widths507/508/511/512/513, activated512, permutedV508, B2/508 and K2/512. Existing GDN49/14 and indexed10 replay cases remain. Independent review pending; no034build/GPUtest yet.
+
+
+### 034 source review and build passed
+
+Independent source/spec/quality review passed. Coverage clarification: permuted V remains eligible and exercises stride handling, so the nine new cases contain three COLS2 cases and six fallbacks. They compare full attention and standalone state outputs; actual-service checks must additionally verify cache-write behavior and dedicated-kernel dispatch. Existing GDN and indexed-replay test counts remain unchanged.
+
+Applied the exact reviewed patch after a clean check. Canonical CUDA 12.9.1 / SM86 Release compilation completed with exit 0 in 59.397 seconds. Full compiler output and command/exit/timing are cuda-build-gdn-cols2-prefill.txt and .exit.json. All 11 files were copied exclusively and hash-verified in tools/llamacpp-cuda-gdn-cols2-prefill; manifest cuda-gdn-cols2-prefill-binary-hashes.json. CUDA DLL SHA256: 90db3738e8312e6f204dd7a7a7a7f9f74353bdb1001e40b2cbd94c31a2f8215a. Independent compiled resource and unchanged-path checks are pending; no 034 GPU test has run.
+
+
+### 034 static and native reference gates passed
+
+Independent compiled inspection passed: new COLS2 uses 56 registers (limit 64), 4480 code bytes, and zero stack/local/spills. All 34 retained GDN variants have identical normalized instructions and resources after mapping the default template suffix; both PQ2 variants also match exactly at 42/37 registers. Column coverage, state offsets, ordered per-column recurrence/reductions, token strides and lane-zero output stores passed inspection. The token loop has 14 loads for two columns versus 26 across two retained column-warps. This confirms the intended sharing, not a throughput gain. Full evidence: cuda-gdn-cols2-prefill-sass-candidate.*, ...-sass-comparison.json and ...-static-gates.json.
+
+After inspection of ordinary wrapper/launcher/server 10160/5620/23780 and four idle slots, authorized maintenance stopped only those processes; inspection034.json and stopped034.json preserve the evidence. The original supervisor and accepted030 snapshot remain available for rollback.
+
+The prepared runner completed all five commands with exit 0: construction smoke, 9/9 new prefill references, 49/49 retained GDN references with 14 explicit unsupported cases, 10/10 indexed-cache cases, and the exact fresh-process replay case. The latter retained direct/capture/replay/replay with a stable graph key/UID. Full native output, hashes, commands, identities and graph events are cuda-gdn-cols2-prefill-runtime*. Candidate service PID14176 is healthy under Nsight for dedicated-kernel dispatch verification; strict service correctness and uninstrumented speed gates remain pending.
